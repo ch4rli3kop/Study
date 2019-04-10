@@ -1527,6 +1527,8 @@ typedef struct malloc_chunk *mbinptr;
     be skipped over during during traversals.  The bits are NOT always
     cleared as soon as bins are empty, but instead only
     when they are noticed to be empty during traversal in malloc.
+    많은 수의 bins를 보완하기 위해서 one-level index 구조체가 bin-by-bin 검색을 하는데에 사용된다. `binmap`은 bins가 분명하게 empty한 상태인지 여부를 기록하는 bitvector이다. 따라서, bins 검색 중에 몇 몇 bins를 건너뛸 수 있다.
+    bits는 bins가 empty할 때마다 바로 지워지지는 않지만, 대신 malloc 동작 중 검색하는 과정에서 empty하다고 인식되는 경우에만 지워진다.
  */
 
 /* Conservatively use 32 bits per map word, even if on 64bit system */
@@ -3726,83 +3728,100 @@ _int_malloc (mstate av, size_t bytes)
          bin. This search is strictly by best-fit; i.e., the smallest
          (with ties going to approximately the least recently used) chunk
          that fits is selected.
+         다음으로 큰 bin을 시작으로 bins를 스캔하면서 chunk를 검색한다.
+         본 검색과정은 철저하게 아주 적합한 방법이다. 최근에 가장 사용되지 않은 the smallest chunk가 선택된다. 
 
          The bitmap avoids needing to check that most blocks are nonempty.
          The particular case of skipping all bins during warm-up phases
          when no chunks have been returned yet is faster than it might look.
+         bitmap을 사용하면 대부분의 blocks이 비어있는지 않은지 확인하지 않아도 된다.
+         아직 어떤 chunk도 반환되지 않은 warm-up 단계(앞선 단계들)동안 모든 bins를 건너 뛰는 특별한 경우는 생각보다 빠르다. 
        */
 
-      ++idx;
-      bin = bin_at (av, idx);
-      block = idx2block (idx);
-      map = av->binmap[block];
-      bit = idx2bit (idx);
+      ++idx; // large bin list의 index 값을 증가시킨다.
+      bin = bin_at (av, idx); // large bin list의 header chunk를 저장한다.
+      block = idx2block (idx); // 해당 large bin list에서 index에 맞는 블록을 저장한다. (shift 연산 수행)
+      map = av->binmap[block]; // binmap[(NBINS / BITSPERMAP)]한 int 형 배열에서 해당 블록을 저장한다. 해당 bin list에 free chunk가 존재한다면 0이 아닐 것이다.
+      bit = idx2bit (idx); // binmap의 매핑에서 특정 비트를 추출한다. 해당 bin list에 free chunk가 존재한다면 0이 아닐 것이다.
 
       for (;; )
         {
-          /* Skip rest of block if there are no more set bits in this block.  */
+          /* Skip rest of block if there are no more set bits in this block.
+          해당 블록 내에서 세팅된 bits가 없을 경우 해당 블록의 나머지는 스킵한다. (즉, ++block 한다.)  
+          */
           if (bit > map || bit == 0)
             {
               do
                 {
-                  if (++block >= BINMAPSIZE) /* out of bins */
+                  if (++block >= BINMAPSIZE) /* out of bins/ 모든 binmap을 검사했다면 top chunk로 할당받는다.*/
                     goto use_top;
                 }
-              while ((map = av->binmap[block]) == 0);
+              while ((map = av->binmap[block]) == 0); // 해당 bin이 empty한지 검사한다. free chunk가 없다면 block을 증가시켜 다음 bin을 검사한다.
 
-              bin = bin_at (av, (block << BINMAPSHIFT));
+              bin = bin_at (av, (block << BINMAPSHIFT)); // 검색된 block에 맞는 index 위치의 bin list를 저장한다.
               bit = 1;
             }
 
-          /* Advance to bin with set bit. There must be one. */
-          while ((bit & map) == 0)
+          /* Advance to bin with set bit. There must be one.
+            설정된 bit로 진행한다. 해당 bit는 반드시 1이어야 한다.  
+          */
+          while ((bit & map) == 0) // bit가 1이 아니면 empty한 상태이다.
             {
-              bin = next_bin (bin);
+              bin = next_bin (bin); // 다음 bin list를 저장한다.
               bit <<= 1;
               assert (bit != 0);
             }
 
-          /* Inspect the bin. It is likely to be non-empty */
-          victim = last (bin);
+          /* Inspect the bin. It is likely to be non-empty
+            bin이 non-empty일 것 같으니 검사한다. 
+          */
+          victim = last (bin); // victim은 현재 bin의 가장 뒤 쪽(TAIL) chunk를 가리킨다.
 
-          /*  If a false alarm (empty bin), clear the bit. */
-          if (victim == bin)
+          /*  If a false alarm (empty bin), clear the bit.
+            bin이 empty한 잘못된 알람인 경우 bit를 제거한다.
+          */
+          if (victim == bin) // 초기화시 bins는 자기자신을 가리키므로 같다면 empty한 상태이다.
             {
-              av->binmap[block] = map &= ~bit; /* Write through */
-              bin = next_bin (bin);
+              av->binmap[block] = map &= ~bit; /* Write through / bit를 제거한다.*/
+              bin = next_bin (bin); // 다음 bin list를 저장한다.
               bit <<= 1;
             }
 
-          else
+          else // 검색한 bin list가 empty하지않은 상태
             {
-              size = chunksize (victim);
+              size = chunksize (victim); // 탐색한 chunk의 크기를 저장한다.
 
-              /*  We know the first chunk in this bin is big enough to use. */
+              /*  We know the first chunk in this bin is big enough to use.
+                현재 bin의 첫 번째 chunk가 사용하기에 충분히 큰지 확인한다.
+               ?현재 victim은 bin->bk로 해당 bin list에서 가장 작은 chunk(가장 TAIL)를 가리키는데 왜 first chunk라는 표현이 나오는지 잘 모르겠다.
+              */
               assert ((unsigned long) (size) >= (unsigned long) (nb));
 
-              remainder_size = size - nb;
+              remainder_size = size - nb; // remainder size를 계산한다.
 
               /* unlink */
-              unlink (av, victim, bck, fwd);
+              unlink (av, victim, bck, fwd); // unlink로 victim을 bin list에서 분리한다.
 
               /* Exhaust */
-              if (remainder_size < MINSIZE)
+              if (remainder_size < MINSIZE) // remainder size가 최소 chunk size보다 작은 경우 그냥 victim 통째로 반환한다.
                 {
-                  set_inuse_bit_at_offset (victim, size);
+                  set_inuse_bit_at_offset (victim, size); // 다음(물리적) chunk에 prev_inuse bit를 설정한다.
                   if (av != &main_arena)
-		    set_non_main_arena (victim);
+		    set_non_main_arena (victim); // victim이 main_arena가 아닐 경우 non_main_arena bit를 설정한다.
                 }
 
               /* Split */
-              else
+              else // remainder size가 최소 chunk size보다 크거나 같은 경우, 두 개의 chunk로 나눈다.
                 {
-                  remainder = chunk_at_offset (victim, nb);
+                  remainder = chunk_at_offset (victim, nb); // remainder chunk 주소를 저장한다.
 
                   /* We cannot assume the unsorted list is empty and therefore
-                     have to perform a complete insert here.  */
-                  bck = unsorted_chunks (av);
+                     have to perform a complete insert here.
+                     여기에 와서는 unsorted bin list가 empty하다고 가정할 수 없으므로 이중연결리스트에 대한 삽입을 수행한다.
+                    */
+                  bck = unsorted_chunks (av); // unsorted bin header chunk를 저장한다.
                   fwd = bck->fd;
-	  if (__glibc_unlikely (fwd->bk != bck))
+	  if (__glibc_unlikely (fwd->bk != bck)) // unsorted bin의 이중 연결리스트 검사
                     {
                       errstr = "malloc(): corrupted unsorted chunks 2";
                       goto errout;
@@ -3813,22 +3832,24 @@ _int_malloc (mstate av, size_t bytes)
                   fwd->bk = remainder;
 
                   /* advertise as last remainder */
-                  if (in_smallbin_range (nb))
+                  if (in_smallbin_range (nb)) // 요청 크기가 smallbin 범위이면 remainder chunk를 last remainder chunk로 등록한다. 
                     av->last_remainder = remainder;
-                  if (!in_smallbin_range (remainder_size))
+                  if (!in_smallbin_range (remainder_size)) // large bin 범위이면 nextsize 필드를 초기화한다.
                     {
                       remainder->fd_nextsize = NULL;
                       remainder->bk_nextsize = NULL;
                     }
                   set_head (victim, nb | PREV_INUSE |
-                            (av != &main_arena ? NON_MAIN_ARENA : 0));
-                  set_head (remainder, remainder_size | PREV_INUSE);
-                  set_foot (remainder, remainder_size);
+                            (av != &main_arena ? NON_MAIN_ARENA : 0)); // victim의 size에 flag bit를 설정한다.
+                  set_head (remainder, remainder_size | PREV_INUSE); // remainder chunk는 victim과 물리적으로 연속되기 때문에, remainder chunk 이전에 존재하는 victim에 대해서 prev_inuse bit를 설정한다.
+                  set_foot (remainder, remainder_size); // remainder chunk는 free된 상태이기 때문에, remainder chunk 다음에(물리적으로) 존재하는 chunk의 prev_size를 설정한다.
+                  /*#define set_head(p, s)       ((p)->mchunk_size = (s))
+​                  #define set_foot(p, s)       (((mchunkptr) ((char *) (p) + (s)))->mchunk_prev_size = (s))*/
                 }
-              check_malloced_chunk (av, victim, nb);
-              void *p = chunk2mem (victim);
-              alloc_perturb (p, bytes);
-              return p;
+              check_malloced_chunk (av, victim, nb); // 정상적으로 할당되었는지 확인한다.
+              void *p = chunk2mem (victim); // victim 주소부터 64bit 기준 0x10을 더한 값을 p에 저장한다. chunk header 부분을 넘어 payload 부분의 주소를 전달하기 위함이다.
+              alloc_perturb (p, bytes); // memset 수행
+              return p; // 주소 값을 반환한다. (종료)
             }
         }
 
