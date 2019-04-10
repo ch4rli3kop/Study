@@ -4201,10 +4201,13 @@ _int_free (mstate av, mchunkptr p, int have_lock)
   purpose since, among other things, it might place chunks back onto
   fastbins.  So, instead, we need to use a minor variant of the same
   code.
+  malloc_consolidate는 fastbins에 저장된 chunks들을 해체하는 특수한 free()이다.
+  free()는 다른 것들 중에서, chunks를 도로 fastbins에 저장할 수 있기 때문에, free() 자체는 이 목적을 위해 사용될 수 없다. 그래서 대신에, 같은 코드를 약간 변형시켜 사용해야한다.
 
   Also, because this routine needs to be called the first time through
   malloc anyway, it turns out to be the perfect place to trigger
   initialization code.
+  또한, 이 루틴은 malloc을 통해 처음 호출되야 하기때문에, 초기화 코드를 실행시키기에 가장 적합한 위치라고 할 수 있다.
 */
 
 static void malloc_consolidate(mstate av)
@@ -4228,12 +4231,12 @@ static void malloc_consolidate(mstate av)
   /*
     If max_fast is 0, we know that av hasn't
     yet been initialized, in which case do so below
+    global_max_fast (fastbin에서 처리되는 메모리의 최대 크기) 값이 0이라면, av가 초기화되지 않았다는 뜻이므로, 아래의 과정(else문)을 수행한다.
   */
+  if (get_max_fast () != 0) { // 초기화가 된 경우
+    clear_fastchunks(av); // av의 FASTCHUNKS_BIT를 제거한다.
 
-  if (get_max_fast () != 0) {
-    clear_fastchunks(av);
-
-    unsorted_bin = unsorted_chunks(av);
+    unsorted_bin = unsorted_chunks(av); // unsorted bin header chunk를 저장한다.
 
     /*
       Remove each chunk from fast bin and consolidate it, placing it
@@ -4241,15 +4244,17 @@ static void malloc_consolidate(mstate av)
       placing in unsorted bin avoids needing to calculate actual bins
       until malloc is sure that chunks aren't immediately going to be
       reused anyway.
+      fastbin에서 각각의 chunk를 제거하고, 병합시킨 다음, unsorted bin에 집어넣는다.
+      이 작업을 하는 다른 이유들 중, unsorted bin에 집어넣는 것은 malloc이 chunks가 즉시 재사용되지 않을 것이라고 확신할 때까지 실제 bin을 계산할 필요가 없다는 것이 있다.
     */
 
-    maxfb = &fastbin (av, NFASTBINS - 1);
-    fb = &fastbin (av, 0);
+    maxfb = &fastbin (av, NFASTBINS - 1); // fastbin 최대 bin list 주소
+    fb = &fastbin (av, 0); // fastbin 최소 bin list 주소
     do {
-      p = atomic_exchange_acq (fb, NULL);
-      if (p != 0) {
+      p = atomic_exchange_acq (fb, NULL); // fb에 lock을 건다. 
+      if (p != 0) { // lock이 제대로 걸린 경우 동작한다.
 	do {
-	  check_inuse_chunk(av, p);
+	  check_inuse_chunk(av, p); // 제대로 chunk로서 기능을 하는지에 대한 검사와, 물리적으로 next chunk에 prev_inuse bit가 제대로 걸려있는지 확인한다. (fastbin에 대해서는 늘 next chunk의 prev_inuse bit가 설정된다.)
 	  nextp = p->fd;
 
 	  /* Slightly streamlined version of consolidation code in free() */
@@ -4299,7 +4304,7 @@ static void malloc_consolidate(mstate av)
       }
     } while (fb++ != maxfb);
   }
-  else {
+  else { // av 초기화가 되지 않은 경우
     malloc_init_state(av);
     check_malloc_state(av);
   }
