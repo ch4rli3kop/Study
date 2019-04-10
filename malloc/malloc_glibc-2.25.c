@@ -3861,53 +3861,61 @@ _int_malloc (mstate av, size_t bytes)
          less well fitting) than any other available chunk since it can
          be extended to be as large as necessary (up to system
          limitations).
+         (요청이) 꽤 크다면, 메모리 끝의 chunk(top chunk, av->top이 가리킴)를 분리한다. 이 방법은 가장 적합한 검색 규칙이다.
+         실제로, top chunk(av->top)은 필요에 따라 (시스템 제한까지) 확장될 수 있기 때문에, 다른 이용가능한 chunk보다 훨씬 크다.
 
          We require that av->top always exists (i.e., has size >=
          MINSIZE) after initialization, so if it would otherwise be
          exhausted by current request, it is replenished. (The main
          reason for ensuring it exists is that we may need MINSIZE space
          to put in fenceposts in sysmalloc.)
+         초기화 후에는 항상 top chunk(av->top)이 존재해야 한다. (즉, top chunk의 size가 항상 MINSIZE보다 크거나 같아야한다.) 그렇지 않고, 현재 요청에 의해 소모된 top chunk의 size가 MINSIZE보다 작을 경우에는, 다시 top chunk를 채운다. (이 과정이 존재하는 주된 이유는 sysmalloc에 경계 확장(fencepost)를 넣기 위해 MINSIZE 공간이 필요할 수도 있기 때문이다.)
        */
 
-      victim = av->top;
+      victim = av->top; // top chunk에서 할당한다.
       size = chunksize (victim);
 
-      if ((unsigned long) (size) >= (unsigned long) (nb + MINSIZE))
+      if ((unsigned long) (size) >= (unsigned long) (nb + MINSIZE)) // top chunk가 요청을 처리하고도 MINSIZE 이상을 유지할 수 있는 충분한 크기를 갖는 경우
         {
           remainder_size = size - nb;
           remainder = chunk_at_offset (victim, nb);
-          av->top = remainder;
+          av->top = remainder; // remainder chunk가 새로운 top chunk가 된다.
           set_head (victim, nb | PREV_INUSE |
-                    (av != &main_arena ? NON_MAIN_ARENA : 0));
-          set_head (remainder, remainder_size | PREV_INUSE);
+                    (av != &main_arena ? NON_MAIN_ARENA : 0)); // 할당하려는 victim의 size에 flag bit를 설정한다.
+          set_head (remainder, remainder_size | PREV_INUSE); // top chunk의 prev_inuse bit를 설정한다.
 
-          check_malloced_chunk (av, victim, nb);
-          void *p = chunk2mem (victim);
-          alloc_perturb (p, bytes);
-          return p;
+          check_malloced_chunk (av, victim, nb); // 정상적으로 할당되었는지 확인한다.
+          void *p = chunk2mem (victim); // victim 주소부터 64bit 기준 0x10을 더한 값을 p에 저장한다. chunk header 부분을 넘어 payload 부분의 주소를 전달하기 위함이다.
+          alloc_perturb (p, bytes); // memset 수행
+          return p; // 주소 값을 반환한다. (종료)
         }
 
       /* When we are using atomic ops to free fast chunks we can get
-         here for all block sizes.  */
-      else if (have_fastchunks (av))
+         here for all block sizes.
+         atomic ops를 사용하여 fast chunks를 free할 때, 모든 블록 크기에 대해 여기로 오게 된다.
+        */
+      else if (have_fastchunks (av)) // fastbin chunks가 존재하는 경우
         {
-          malloc_consolidate (av);
-          /* restore original bin index */
-          if (in_smallbin_range (nb))
-            idx = smallbin_index (nb);
-          else
-            idx = largebin_index (nb);
+          malloc_consolidate (av); // fastbins 병합과정
+          /* restore original bin index 
+            원래 bin index를 회복한다.
+          */
+          if (in_smallbin_range (nb)) // 요청한 크기가 small bin인 경우
+            idx = smallbin_index (nb); // small bin index를 저장한다.
+          else // 요청한 크기가 large bin인 경우
+            idx = largebin_index (nb); // large bin index를 저장한다.
         }
 
       /*
          Otherwise, relay to handle system-dependent cases
+         그렇지 않다면, 시스템에 종속적인 경우를 처리하기 위해 교체한다.
        */
-      else
+      else // top chunk가 요청을 처리할 수 없는 경우
         {
-          void *p = sysmalloc (nb, av);
+          void *p = sysmalloc (nb, av); // sysmalloc을 통해 시스템에 메모리를 요청한다.
           if (p != NULL)
-            alloc_perturb (p, bytes);
-          return p;
+            alloc_perturb (p, bytes); // memset 수행
+          return p; // 주소 값을 반환한다. (종료)
         }
     }
 }
