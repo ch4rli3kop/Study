@@ -3690,31 +3690,34 @@ _int_malloc (mstate av, size_t bytes)
                      We cannot assume the unsorted list is empty and therefore have to perform a complete insert here.  
                      unsorted list가 empty하다고 가정할 수 없으므로, 여기에서 완벽한 삽입을 수행한다.
                   */
-                  bck = unsorted_chunks (av); // unsorted bin chunk를 저장한다.
-                  fwd = bck->fd; // unsorted bin 이중 연결리스트 check
-	  if (__glibc_unlikely (fwd->bk != bck))
+                  bck = unsorted_chunks (av); // unsorted bin header chunk를 저장한다.
+                  fwd = bck->fd; // 첫 번째 unsorted bin chunk를 저장한다.
+	  if (__glibc_unlikely (fwd->bk != bck)) // unsorted bin 이중 연결리스트가 유효한지 확인한다.
                     {
                       errstr = "malloc(): corrupted unsorted chunks";
                       goto errout;
                     }
+                  // remainder chunk를 unsorted bin list에 삽입한다. 앞 쪽(HEAD)에 삽입한다. (unsorted bin은 FIFO로 동작)
                   remainder->bk = bck;
                   remainder->fd = fwd;
                   bck->fd = remainder;
                   fwd->bk = remainder;
-                  if (!in_smallbin_range (remainder_size))
+                  if (!in_smallbin_range (remainder_size)) // remainder chunk가 large bin size라면
                     {
                       remainder->fd_nextsize = NULL;
                       remainder->bk_nextsize = NULL;
                     }
                   set_head (victim, nb | PREV_INUSE |
-                            (av != &main_arena ? NON_MAIN_ARENA : 0));
-                  set_head (remainder, remainder_size | PREV_INUSE);
-                  set_foot (remainder, remainder_size);
+                            (av != &main_arena ? NON_MAIN_ARENA : 0)); // victim의 size에 flag bit를 설정한다.
+                  set_head (remainder, remainder_size | PREV_INUSE); // remainder chunk는 victim과 물리적으로 연속되기 때문에, remainder chunk 이전에 존재하는 victim에 대해서 prev_inuse bit를 설정한다.
+                  set_foot (remainder, remainder_size); // remainder chunk는 free된 상태이기 때문에, remainder chunk 다음에(물리적으로) 존재하는 chunk의 prev_size를 설정한다.
+                  /*#define set_head(p, s)       ((p)->mchunk_size = (s))
+                  #define set_foot(p, s)       (((mchunkptr) ((char *) (p) + (s)))->mchunk_prev_size = (s))*/
                 }
-              check_malloced_chunk (av, victim, nb);
-              void *p = chunk2mem (victim);
-              alloc_perturb (p, bytes);
-              return p;
+              check_malloced_chunk (av, victim, nb); // 정상적으로 할당되었는지 확인한다.
+              void *p = chunk2mem (victim); // victim 주소부터 64bit 기준 0x10을 더한 값을 p에 저장한다. chunk header 부분을 넘어 payload 부분의 주소를 전달하기 위함이다.
+              alloc_perturb (p, bytes); // memset 수행
+              return p; // 주소 값을 반환한다. (종료)
             }
         }
 
