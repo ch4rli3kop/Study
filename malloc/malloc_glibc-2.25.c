@@ -3944,103 +3944,108 @@ _int_free (mstate av, mchunkptr p, int have_lock)
   /* Little security check which won't hurt performance: the
      allocator never wrapps around at the end of the address space.
      Therefore we can exclude some size values which might appear
-     here by accident or by "design" from some intruder.  */
+     here by accident or by "design" from some intruder.
+     성능에 해를 입히지 않는 약간의 보안 검사를 진행한다. : 할당자는 절대 주소 공간 끝을 둘러 쌀 수 없다. (즉, size가 -size보다 클 수 없어, 아래로 주소가 overflow 날 수 없다는 뜻)
+     따라서, 침입자의 의해 만들어지거나 우연히 만들어져서 나타날 수 있는 size 값을 제외할 수 있다.
+     */
   if (__builtin_expect ((uintptr_t) p > (uintptr_t) -size, 0)
-      || __builtin_expect (misaligned_chunk (p), 0))
+      || __builtin_expect (misaligned_chunk (p), 0)) // __builtin_expect (condition, 0)이라는 것은 condition이 0이길 기대한다는 뜻이다. 따라서 condition이 0이 될 가능성이 높은 경우를 나타낸다. 아무튼, free되는 chunk의 size의 값과 해당 값이 memory align에 맞춰 정렬되었는지 확인한다.
     {
       errstr = "free(): invalid pointer";
     errout:
       if (!have_lock && locked)
-        __libc_lock_unlock (av->mutex);
-      malloc_printerr (check_action, errstr, chunk2mem (p), av);
+        __libc_lock_unlock (av->mutex); // arena에 걸려있던 lock을 푼다.
+      malloc_printerr (check_action, errstr, chunk2mem (p), av); // 오류를 출력한다.
       return;
     }
-  /* We know that each chunk is at least MINSIZE bytes in size or a
-     multiple of MALLOC_ALIGNMENT.  */
+  /* We know that each chunk is at least MINSIZE bytes in size or a multiple of MALLOC_ALIGNMENT.  
+    각 chunk의 size는 적어도 MINSIZE 이상이거나 MALLOC_ALIGNMENT의 배수이다.
+  */
   if (__glibc_unlikely (size < MINSIZE || !aligned_OK (size)))
     {
       errstr = "free(): invalid size";
       goto errout;
     }
 
-  check_inuse_chunk(av, p);
+  check_inuse_chunk(av, p); // p에 대해 next chunk의 prev_inuse bit를 확인하는 등의 작업들을 수행한다. 해당 chunk가 사용 중이어야 한다.
 
   /*
     If eligible, place chunk on a fastbin so it can be found
     and used quickly in malloc.
+    fastbin의 맞는다면, 해당 chunk를 fastbin에 넣어서 malloc 시 빨리 찾아 사용될 수 있도록 한다.
   */
-
   if ((unsigned long)(size) <= (unsigned long)(get_max_fast ())
 
 #if TRIM_FASTBINS
       /*
 	If TRIM_FASTBINS set, don't place chunks
 	bordering top into fastbins
+  TRIM_FASTBINS가 설정되어 있는 경우, top chunk와 맞닿아 있는 chunk는 fastbins에 넣으면 안된다.
       */
       && (chunk_at_offset(p, size) != av->top)
 #endif
-      ) {
+      ) { // fastbin에 넣는 경우
 
     if (__builtin_expect (chunksize_nomask (chunk_at_offset (p, size))
-			  <= 2 * SIZE_SZ, 0)
+			  <= 2 * SIZE_SZ, 0) // next chunk의 size가 최소 chunk size보다 작은지 확인한다.
 	|| __builtin_expect (chunksize (chunk_at_offset (p, size))
-			     >= av->system_mem, 0))
+			     >= av->system_mem, 0)) // next chunk의 size가 system이 허용하는 크기보다 큰 지 확인한다.
       {
-	/* We might not have a lock at this point and concurrent modifications
-	   of system_mem might have let to a false positive.  Redo the test
-	   after getting the lock.  */
-	if (have_lock
+	/* We might not have a lock at this point and concurrent modifications of system_mem might have let to a false positive.  Redo the test after getting the lock.  
+  이 시점에서 lock이 없을 수도 있고, system_mem의 동시 수정으로 1종 오류(실제로 부정인데 긍정함)를 낼 수도 있다. lock을 건 후 다시 테스트를 수행한다.
+  */
+	if (have_lock //
 	    || ({ assert (locked == 0);
-		  __libc_lock_lock (av->mutex);
+		  __libc_lock_lock (av->mutex); // lock 다시 설정
 		  locked = 1;
-		  chunksize_nomask (chunk_at_offset (p, size)) <= 2 * SIZE_SZ
-		    || chunksize (chunk_at_offset (p, size)) >= av->system_mem;
+		  chunksize_nomask (chunk_at_offset (p, size)) <= 2 * SIZE_SZ // p의 next chunk의 size와 최소 chunk size 비교
+		    || chunksize (chunk_at_offset (p, size)) >= av->system_mem; // next chunk의 크기가 system이 허용하는 메모리 크기보다 큰지 확인한다.
 	      }))
 	  {
 	    errstr = "free(): invalid next size (fast)";
 	    goto errout;
 	  }
-	if (! have_lock)
+	if (! have_lock) //
 	  {
-	    __libc_lock_unlock (av->mutex);
+	    __libc_lock_unlock (av->mutex); // lock을 해제한다.
 	    locked = 0;
 	  }
       }
 
-    free_perturb (chunk2mem(p), size - 2 * SIZE_SZ);
+    free_perturb (chunk2mem(p), size - 2 * SIZE_SZ); // memset으로 초기화해준다.
 
-    set_fastchunks(av);
-    unsigned int idx = fastbin_index(size);
-    fb = &fastbin (av, idx);
+    set_fastchunks(av); // 해당 arena가 fastbin chunk를 포함한다는 것을 알게하기 위한 fastchunks_flag를 설정한다.
+    unsigned int idx = fastbin_index(size); // 해당 size에 맞는 index를 저장한다.
+    fb = &fastbin (av, idx); // fastbin list를 저장한다.
 
-    /* Atomically link P to its fastbin: P->FD = *FB; *FB = P;  */
+    /* Atomically link P to its fastbin: P->FD = *FB; *FB = P;  
+    p를 fastbin list에 추가한다.*/
     mchunkptr old = *fb, old2;
     unsigned int old_idx = ~0u;
     do
       {
-	/* Check that the top of the bin is not the record we are going to add
-	   (i.e., double free).  */
-	if (__builtin_expect (old == p, 0))
+	/* Check that the top of the bin is not the record we are going to add (i.e., double free).  
+    bin list의 최상단(HEAD)와 추가하려는 chunk가 같은지 확인한다.*/
+	if (__builtin_expect (old == p, 0)) // ** double free 확인 **
 	  {
 	    errstr = "double free or corruption (fasttop)";
 	    goto errout;
 	  }
-	/* Check that size of fastbin chunk at the top is the same as
-	   size of the chunk that we are adding.  We can dereference OLD
-	   only if we have the lock, otherwise it might have already been
-	   deallocated.  See use of OLD_IDX below for the actual check.  */
-	if (have_lock && old != NULL)
-	  old_idx = fastbin_index(chunksize(old));
-	p->fd = old2 = old;
+	/* Check that size of fastbin chunk at the top is the same as	   size of the chunk that we are adding.  We can dereference OLD only if we have the lock, otherwise it might have already been deallocated.  See use of OLD_IDX below for the actual check.  
+     fastbin list의 앞(HEAD) 쪽의 chunk의 size와 현재 추가하려는 chunk의 size가 동일한지 확인한다. lock이 걸린 상태에서만 OLD를 역 참조할 수 있으며, 그렇지 않은 경우 이미 할당이 취소되었을 수 있다. 실제 확인을 위해서 아래의 OLD_IDX의 사용을 참조.
+     */
+	if (have_lock && old != NULL) // lock이 걸려있고, old(기존 freed fastbin chunk)가 존재하는 경우
+	  old_idx = fastbin_index(chunksize(old)); // 기존 chunk의 size에 대한 index를 저장한다.
+	p->fd = old2 = old; // p를 이전 fastbin list와 연결한다.
       }
-    while ((old = catomic_compare_and_exchange_val_rel (fb, p, old2)) != old2);
+    while ((old = catomic_compare_and_exchange_val_rel (fb, p, old2)) != old2); // 이 함수는 다음과 같이 정의되는데, #define atomic_compare_and_exchange_val_acq(mem, newval, oldval) __sync_val_compare_and_swap (mem, oldval, newval) 해당 함수의 동작은 먼저, *mem == oldval인지 확인하여 동일하다면 *mem = newval한다는 의미이다. 또한 위의 동작은 atomic으로 이뤄진다. 즉, 다른 프로세스/스레드가 *mem, oldval, newval 값을 변경시키지 못하는 것이 보장되는 상태에서 수행된다. 즉, *fb와 old2를 비교하여 같으면 *fb = p한 뒤, old2를 리턴한다. 정상적으로 수행되었으면 old2 == old2가 된다.
 
-    if (have_lock && old != NULL && __builtin_expect (old_idx != idx, 0))
+    if (have_lock && old != NULL && __builtin_expect (old_idx != idx, 0)) // lock이 걸려있고, old가 존재한다면 old_idx와 p의 index를 비교한다.
       {
 	errstr = "invalid fastbin entry (free)";
 	goto errout;
       }
-  }
+  } // fastbin에 p를 저장한다.
 
   /*
     Consolidate other non-mmapped chunks as they arrive.
