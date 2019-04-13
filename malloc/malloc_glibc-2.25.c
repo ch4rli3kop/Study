@@ -4047,26 +4047,28 @@ _int_free (mstate av, mchunkptr p, int have_lock)
       }
   } // fastbin에 p를 저장한다.
 
+
   /*
     Consolidate other non-mmapped chunks as they arrive.
+    도착한 다른 non-mmapped chunks를 병합한다.
   */
-
-  else if (!chunk_is_mmapped(p)) {
-    if (! have_lock) {
-      __libc_lock_lock (av->mutex);
+  else if (!chunk_is_mmapped(p)) { // fastbin이 아니며, mmap을 통해 할당된 chunk가 아닌 경우
+    if (! have_lock) { // unlock인 경우
+      __libc_lock_lock (av->mutex); // lock을 건다.
       locked = 1;
     }
 
-    nextchunk = chunk_at_offset(p, size);
+    nextchunk = chunk_at_offset(p, size); // next chunk의 offset을 저장한다.
 
-    /* Lightweight tests: check whether the block is already the
-       top block.  */
+    /* Lightweight tests: check whether the block is already the top block.
+      p가 top chunk인지 확인하는 간단한 테스트 */
     if (__glibc_unlikely (p == av->top))
       {
 	errstr = "double free or corruption (top)";
 	goto errout;
       }
-    /* Or whether the next chunk is beyond the boundaries of the arena.  */
+    /* Or whether the next chunk is beyond the boundaries of the arena.  
+      next chunk가 arena의 범위를 넘어서는지 확인한다.*/
     if (__builtin_expect (contiguous (av)
 			  && (char *) nextchunk
 			  >= ((char *) av->top + chunksize(av->top)), 0))
@@ -4074,80 +4076,84 @@ _int_free (mstate av, mchunkptr p, int have_lock)
 	errstr = "double free or corruption (out)";
 	goto errout;
       }
-    /* Or whether the block is actually not marked used.  */
+    /* Or whether the block is actually not marked used.  
+      블록이 실제 사용된다고 표시되었는지 여부를 확인한다. (next chunk의 prev_inuse bit가 설정되어 사용 중이라고 표시되어야 함)*/
     if (__glibc_unlikely (!prev_inuse(nextchunk)))
       {
 	errstr = "double free or corruption (!prev)";
 	goto errout;
       }
 
-    nextsize = chunksize(nextchunk);
-    if (__builtin_expect (chunksize_nomask (nextchunk) <= 2 * SIZE_SZ, 0)
+    nextsize = chunksize(nextchunk); // next chunk size 저장
+    if (__builtin_expect (chunksize_nomask (nextchunk) <= 2 * SIZE_SZ, 0) // next chunk의 size가 최소 chunk size보다 작거나 system이 허용하는 메모리 크기보다 큰지 확인한다.
 	|| __builtin_expect (nextsize >= av->system_mem, 0))
       {
 	errstr = "free(): invalid next size (normal)";
 	goto errout;
       }
 
-    free_perturb (chunk2mem(p), size - 2 * SIZE_SZ);
+    free_perturb (chunk2mem(p), size - 2 * SIZE_SZ); // memset을 통해 초기화한다.
 
-    /* consolidate backward */
-    if (!prev_inuse(p)) {
+    /* consolidate backward 
+      뒤로(previous chunk)과 병합한다. */
+    if (!prev_inuse(p)) { // prev chunk가 free된 chunk라면(fastbin이 아닌)
       prevsize = prev_size (p);
       size += prevsize;
       p = chunk_at_offset(p, -((long) prevsize));
-      unlink(av, p, bck, fwd);
+      unlink(av, p, bck, fwd); // prev chunk를 bin list에서 제거한다.
     }
 
-    if (nextchunk != av->top) {
-      /* get and clear inuse bit */
-      nextinuse = inuse_bit_at_offset(nextchunk, nextsize);
+    if (nextchunk != av->top) { // next chunk가 top chunk가 아닌 경우
+      /* get and clear inuse bit 
+        inuse bit를 가져오고 제거한다.*/
+      nextinuse = inuse_bit_at_offset(nextchunk, nextsize); // next chunk에 대한 next chunk의 prev_inuse bit를 이용하여 next chunk의 inuse bit를 가져온다.
 
-      /* consolidate forward */
-      if (!nextinuse) {
-	unlink(av, nextchunk, bck, fwd);
+      /* consolidate forward 
+        앞(next chunk)와 병합한다.*/
+      if (!nextinuse) { // next chunk가 사용 중이 아닌 경우
+	unlink(av, nextchunk, bck, fwd); // next chunk 해제
 	size += nextsize;
       } else
-	clear_inuse_bit_at_offset(nextchunk, 0);
+	clear_inuse_bit_at_offset(nextchunk, 0); // p에 대한 next chunk의 prev_inuse bit를 제거한다.
 
       /*
 	Place the chunk in unsorted chunk list. Chunks are
 	not placed into regular bins until after they have
 	been given one chance to be used in malloc.
-      */
-
-      bck = unsorted_chunks(av);
-      fwd = bck->fd;
-      if (__glibc_unlikely (fwd->bk != bck))
+  chunks를 unsorted bin에 집어 넣는다. chunks는 malloc()에서 다시 사용될 기회를 얻을 때까지 regular bins(small, large)에 들어가지 않는다. */
+      bck = unsorted_chunks(av); // unsorted bin의 header chunk를 저장한다.
+      fwd = bck->fd; // unsorted bin의 첫 번째 chunk를 저장한다.
+      if (__glibc_unlikely (fwd->bk != bck)) // header chunk->fd->bk == header chunk인지 확인한다.
 	{
 	  errstr = "free(): corrupted unsorted chunks";
 	  goto errout;
 	}
-      p->fd = fwd;
+      p->fd = fwd; // unsorted bin list에 삽입할 준비
       p->bk = bck;
-      if (!in_smallbin_range(size))
+      if (!in_smallbin_range(size)) // large bin 범위인 경우
 	{
-	  p->fd_nextsize = NULL;
+	  p->fd_nextsize = NULL; // nextsize 초기화
 	  p->bk_nextsize = NULL;
 	}
-      bck->fd = p;
+      // unsorted bin의 맨 앞(HEAD)에 현재 chunk를 추가한다. (FIFO) 다만 malloc 시 remainder chunk를 unsorted bin에 삽입할 때에는 TAIL 쪽에 넣는다.
+      bck->fd = p; 
       fwd->bk = p;
 
-      set_head(p, size | PREV_INUSE);
-      set_foot(p, size);
+      set_head(p, size | PREV_INUSE); // prev chunk에 대해 현재 chunk에 prev_inuse bit를 설정한다.
+      set_foot(p, size); // 현재 chunk가 free 되었으므로 next chunk의 prev_size에 현재 chunk의 size를 저장한다.
 
-      check_free_chunk(av, p);
+      check_free_chunk(av, p); // free 잘 되었나 확인한다. prev inuse bit, align 등 이것저것 확인함
     }
 
     /*
       If the chunk borders the current high end of memory,
       consolidate into top
+      만약 chunk가 메모리의 가장 높은 값의 경계를 갖는다면(top chunk랑 인접해있다면), top chunk로 병합한다.
     */
-
-    else {
+    else { // next chunk가 top chunk인 경우
       size += nextsize;
-      set_head(p, size | PREV_INUSE);
-      av->top = p;
+      set_head(p, size | PREV_INUSE); // prev chunk에 대해 prev_inuse bit 설정
+      av->top = p; // top chunk로 병합한다.
       check_chunk(av, p);
     }
 
@@ -4188,12 +4194,13 @@ _int_free (mstate av, mchunkptr p, int have_lock)
       assert (locked);
       __libc_lock_unlock (av->mutex);
     }
-  }
+  } // fastbin size가 아니며, mmap으로 할당되지 않은 chunk 관리
+  
   /*
     If the chunk was allocated via mmap, release via munmap().
+    chunk가 mmap()을 통해 할당되었다면, munmap()을 호출하여 해제한다.
   */
-
-  else {
+  else { // mmap()을 통해 할당한 경우
     munmap_chunk (p);
   }
 }
