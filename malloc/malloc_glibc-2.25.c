@@ -4250,63 +4250,66 @@ static void malloc_consolidate(mstate av)
 
     maxfb = &fastbin (av, NFASTBINS - 1); // fastbin 최대 bin list 주소
     fb = &fastbin (av, 0); // fastbin 최소 bin list 주소
-    do {
+    do { // fb가 maxfb가 될 때까지 반복한다.
       p = atomic_exchange_acq (fb, NULL); // fb에 lock을 건다. 
       if (p != 0) { // lock이 제대로 걸린 경우 동작한다.
-	do {
+	do { // 해당 fastbinlist 내에 free된 chunk가 모두 소모될 때까지 반복한다.
 	  check_inuse_chunk(av, p); // 제대로 chunk로서 기능을 하는지에 대한 검사와, 물리적으로 next chunk에 prev_inuse bit가 제대로 걸려있는지 확인한다. (fastbin에 대해서는 늘 next chunk의 prev_inuse bit가 설정된다.)
-	  nextp = p->fd;
+	  nextp = p->fd; // binlist 내의 next chunk를 저장한다.
 
-	  /* Slightly streamlined version of consolidation code in free() */
-	  size = chunksize (p);
-	  nextchunk = chunk_at_offset(p, size);
-	  nextsize = chunksize(nextchunk);
+	  /* Slightly streamlined version of consolidation code in free() 
+      free()의 병합 코드가 약간 간소화된 버전이다.
+    */
+	  size = chunksize (p); // 현재 chunk의 size를 저장한다.
+	  nextchunk = chunk_at_offset(p, size); // 물리적으로 next chunk 저장
+	  nextsize = chunksize(nextchunk); // next chunk의 size를 저장한다.
 
-	  if (!prev_inuse(p)) {
+	  if (!prev_inuse(p)) { // 이전 chunk에대해 prev_inuse bit가 설정되지 않았다면(prev chunk가 free된 상태라면, fastbin인 경우 항상 next chunk(물리적)의 prev_inuse bit가 설정된다.)
 	    prevsize = prev_size (p);
 	    size += prevsize;
-	    p = chunk_at_offset(p, -((long) prevsize));
-	    unlink(av, p, bck, fwd);
+	    p = chunk_at_offset(p, -((long) prevsize)); // p에 prev chunk의 offset을 저장한다.
+	    unlink(av, p, bck, fwd); // p는 항상 이중 연결리스트로 된 binlist이므로 unlink를 이용하여 binlist에서 제거한다.
 	  }
 
-	  if (nextchunk != av->top) {
-	    nextinuse = inuse_bit_at_offset(nextchunk, nextsize);
+	  if (nextchunk != av->top) { // nextchunk가 top chunk가 아닐 경우
+	    nextinuse = inuse_bit_at_offset(nextchunk, nextsize); // nextchunk에대해 next chunk(물리적)의 prev_inuse bit를 확인하여 nextchunk가 사용 중인지 확인한다.(fastbin이 아닌 free된 chunk인지 확인)
 
-	    if (!nextinuse) {
+	    if (!nextinuse) { // nextchunk가 fastbin이 아닌 free된 chunk인 경우
 	      size += nextsize;
-	      unlink(av, nextchunk, bck, fwd);
-	    } else
-	      clear_inuse_bit_at_offset(nextchunk, 0);
+	      unlink(av, nextchunk, bck, fwd); // binlist에서 제거한다.
+	    } else // nextchunk가 fastbin이거나 free된 chunk가 아닐 경우
+	      clear_inuse_bit_at_offset(nextchunk, 0); // 현재 fastbin chunk에 대한 prev_inuse bit를 제거한다.
 
+      // ** unsorted bin의 앞 쪽에 새로운 chunk를 추가한다. **
 	    first_unsorted = unsorted_bin->fd;
 	    unsorted_bin->fd = p;
 	    first_unsorted->bk = p;
 
-	    if (!in_smallbin_range (size)) {
+	    if (!in_smallbin_range (size)) { // 해당 bin이 large bin size인 경우 nextsize를 초기화한다.
 	      p->fd_nextsize = NULL;
 	      p->bk_nextsize = NULL;
 	    }
 
-	    set_head(p, size | PREV_INUSE);
+	    set_head(p, size | PREV_INUSE); // 물리적으로 이전 chunk는 사용 중인 chunk이므로 prev_inuse bit를 설정한다. (p의 prev_inuse bit이 1인 경우였거나, 혹은 p 이전의 prev chunk가 free된 chunk였다면 bins의 속하는 chunk였다면 이미 해당 chunk의 prev chunk와 병합했을 것이기 때문)
 	    p->bk = unsorted_bin;
 	    p->fd = first_unsorted;
-	    set_foot(p, size);
+	    set_foot(p, size); // 병합한 p에대해 물리적으로 next chunk의 prev_size에 값을 저장한다.
 	  }
 
-	  else {
+	  else { // next chunk가 top chunk인 경우, top chunk와 병합된다.
 	    size += nextsize;
-	    set_head(p, size | PREV_INUSE);
-	    av->top = p;
+	    set_head(p, size | PREV_INUSE); // top chunk의 prev_inuse bit를 설정한다.
+	    av->top = p; // top chunk가 된다.
 	  }
 
-	} while ( (p = nextp) != 0);
+	} while ( (p = nextp) != 0); // 해당 fastbinlist 내에 free된 chunk가 모두 소모될 때까지 반복한다.
 
       }
-    } while (fb++ != maxfb);
+    } while (fb++ != maxfb); // fb가 maxfb가 될 때까지 반복한다.
   }
   else { // av 초기화가 되지 않은 경우
-    malloc_init_state(av);
-    check_malloc_state(av);
+    malloc_init_state(av); // av를 초기화시켜준다.
+    check_malloc_state(av); // 해당 arena에 대해서 chunk들이 정상적으로 관계되어 있는지 확인한다.
   }
 }
 
