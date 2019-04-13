@@ -4161,6 +4161,7 @@ _int_free (mstate av, mchunkptr p, int have_lock)
       If freeing a large space, consolidate possibly-surrounding
       chunks. Then, if the total unused topmost memory exceeds trim
       threshold, ask malloc_trim to reduce top.
+      큰 공간을 해제하는 경우, 가능한 주변 chunks를 모두 병합한다. 그런 다음, 만약 사용하지 않은 최상위 메모리가 trim 임계 값을 초과한다면, top chunk를 줄이도록 malloc_trim을 호출한다.
 
       Unless max_fast is 0, we don't know if there are fastbins
       bordering top, so we cannot tell for sure whether threshold
@@ -4168,40 +4169,42 @@ _int_free (mstate av, mchunkptr p, int have_lock)
       don't want to consolidate on each free.  As a compromise,
       consolidation is performed if FASTBIN_CONSOLIDATION_THRESHOLD
       is reached.
+      max_fast가 0이 아니라면, top chunk 경계에 fastbins이 있는지 알 수 없기 때문에, fastbins을 병합하지 않으면 임계 값에 도달했는지 확실히 알 수가 없다.
     */
 
-    if ((unsigned long)(size) >= FASTBIN_CONSOLIDATION_THRESHOLD) {
-      if (have_fastchunks(av))
-	malloc_consolidate(av);
+    if ((unsigned long)(size) >= FASTBIN_CONSOLIDATION_THRESHOLD) { // FASTBIN 임계 값보다 큰 경우
+      if (have_fastchunks(av)) // fastbin이 존재하면
+	malloc_consolidate(av); // fastbin 병합을 수행한다.
 
-      if (av == &main_arena) {
+      if (av == &main_arena) { // 현재 arena가 main_arena인 경우
 #ifndef MORECORE_CANNOT_TRIM
-	if ((unsigned long)(chunksize(av->top)) >=
+	if ((unsigned long)(chunksize(av->top)) >= // top chunk의 size가 trim 임계 값보다 큰 경우
 	    (unsigned long)(mp_.trim_threshold))
-	  systrim(mp_.top_pad, av);
+	  systrim(mp_.top_pad, av); // systrim()을 호출하여 top chunk의 size를 줄인다.
 #endif
-      } else {
+      } else { // 현재 arena가 main_arena가 아닌 경우, thread arena
 	/* Always try heap_trim(), even if the top chunk is not
-	   large, because the corresponding heap might go away.  */
-	heap_info *heap = heap_for_ptr(top(av));
+	   large, because the corresponding heap might go away.  
+     비록 top chunk가 크지 않더라도, 해당 heap이 사라질 수 있기 때문에 항상 heap_trim()을 수행한다.*/
+	heap_info *heap = heap_for_ptr(top(av)); // thread arena의 시작 포인터를 저장한다.
 
-	assert(heap->ar_ptr == av);
+	assert(heap->ar_ptr == av); // arena 확인
 	heap_trim(heap, mp_.top_pad);
       }
     }
 
-    if (! have_lock) {
+    if (! have_lock) { // lock이 걸려있지 않다면
       assert (locked);
-      __libc_lock_unlock (av->mutex);
+      __libc_lock_unlock (av->mutex); // unlock한다.
     }
-  } // fastbin size가 아니며, mmap으로 할당되지 않은 chunk 관리
+  } // fastbin size가 아니며, mmap으로 할당되지 않은 chunk(즉, sbrk로 할당받은 chunk) 관리
   
   /*
     If the chunk was allocated via mmap, release via munmap().
     chunk가 mmap()을 통해 할당되었다면, munmap()을 호출하여 해제한다.
   */
   else { // mmap()을 통해 할당한 경우
-    munmap_chunk (p);
+    munmap_chunk (p); // munmap을 이용하여 해제한다.
   }
 }
 
