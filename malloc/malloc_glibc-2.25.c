@@ -3359,23 +3359,24 @@ _int_malloc (mstate av, size_t bytes)
   */
   if (__glibc_unlikely (av == NULL))
     {
-      void *p = sysmalloc (nb, av);
+      void *p = sysmalloc (nb, av); // sysmalloc() 호출
       if (p != NULL)
-	alloc_perturb (p, bytes);
-      return p;
+	alloc_perturb (p, bytes); // memset 초기화
+      return p; // 할당받은 chunk를 반환한다.
     }
 
   /*
      If the size qualifies as a fastbin, first check corresponding bin.
      This code is safe to execute even if av is not yet initialized, so we
      can try it without checking, which saves some time on this fast path.
+     할당하려는 size가 fastbin에 적합하다면, 해당 size에 맞는 bin을 확인한다. 이 코드는 av가 초기화되지 않더라도 실행하는데에 안전하기 때문에, 검사없이 실행할 수 있어 시간을 절약할 수 있다.
    */
 
   if ((unsigned long) (nb) <= (unsigned long) (get_max_fast ())) // fastbin 범위검사
     {
       idx = fastbin_index (nb); // nb에 해당하는 fastbin의 idx 값을 저장
       mfastbinptr *fb = &fastbin (av, idx); // arena에서 fastbin의 해당 idx 주소를 저장 &((ar_ptr)->fastbinsY[idx])과 같음.
-      mchunkptr pp = *fb; // 해당 size의 fastbin list의 시작 주소 저장.
+      mchunkptr pp = *fb; // 해당 bin list의 첫 번째(가장 앞 쪽, HEAD) chunk 주소를 저장한다.
       do
         {
           victim = pp; // victim에 앞쪽 chunk의 주소가 저장된다.
