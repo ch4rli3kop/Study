@@ -3491,7 +3491,7 @@ _int_malloc (mstate av, size_t bytes)
   for (;; )
     {
       int iters = 0;
-      while ((victim = unsorted_chunks (av)->bk) != unsorted_chunks (av)) // unsorted->bk == unsorted가 될때까지 이므로, unsorted bin이 모두 소모될 때까지 반복하는 것과 같다. unsorted bin list에서 가장 뒷부분이 victim이 된다.
+      while ((victim = unsorted_chunks (av)->bk) != unsorted_chunks (av)) // unsorted->bk == unsorted가 될때까지 이므로, unsorted bin이 모두 소모될 때까지 반복하는 것과 같다. unsorted bin list에서 가장 뒷부분(TAIL)이 victim이 된다.
         {
           bck = victim->bk;
           if (__builtin_expect (chunksize_nomask (victim) <= 2 * SIZE_SZ, 0)
@@ -3518,7 +3518,7 @@ _int_malloc (mstate av, size_t bytes)
             { // 해당 chunk는 두 chunk로 나뉘게 된다.
               /* split and reattach remainder */
               remainder_size = size - nb; // 나누고 남은 크기를 remainder_size에 저장한다.
-              remainder = chunk_at_offset (victim, nb); // 나누기 위한 offset을 저장한다.
+              remainder = chunk_at_offset (victim, nb); // remainder chunk의 offset을 저장한다.
               unsorted_chunks (av)->bk = unsorted_chunks (av)->fd = remainder; // unsorted bin chunk가 현재 이 chunk만 유일했으므로, 기존 victim 대신 나누고 남은 chunk를 새로운 unsorted bin chunk로 등록한다.
               av->last_remainder = remainder; // 나누고 남은 chunk는 arena의 last remainder chunk가 된다.
               remainder->bk = remainder->fd = unsorted_chunks (av); // remainder chunk와 unsorted bin을 이어준다. 해당 chunk가 unsorted bin의 유일한 chunk이므로 fd와 bk 모두에 unsorted chunk 주소를 저장한다.
@@ -3585,7 +3585,7 @@ _int_malloc (mstate av, size_t bytes)
                 {
                   /*
                    Or with inuse bit to speed comparisons 
-                   비교 속도를 향상시키기 위해서 prev_inuse bit를 설정한다고 하는데 왜 그러는지 잘 모르겠다.
+                   비교 속도를 향상시키기 위해서 prev_inuse bit를 설정한다고 하는데 왜 그러는지 잘 모르겠다. 하지만 freed large bin chunk의 prev chunk는 분명 inuse bit가 설정되어 있는 chunk일 것이다.
                   */
                   size |= PREV_INUSE;
                   /* if smaller than smallest, bypass loop below */
@@ -3741,9 +3741,9 @@ _int_malloc (mstate av, size_t bytes)
          아직 어떤 chunk도 반환되지 않은 warm-up 단계(앞선 단계들)동안 모든 bins를 건너 뛰는 특별한 경우는 생각보다 빠르다. 
        */
 
-      ++idx; // large bin list의 index 값을 증가시킨다.
-      bin = bin_at (av, idx); // large bin list의 header chunk를 저장한다.
-      block = idx2block (idx); // 해당 large bin list에서 index에 맞는 블록을 저장한다. (shift 연산 수행)
+      ++idx; // bin list의 index 값을 증가시킨다.
+      bin = bin_at (av, idx); // bin list의 header chunk를 저장한다.
+      block = idx2block (idx); // 해당 bin list에서 index에 맞는 블록을 저장한다. (shift 연산 수행)
       map = av->binmap[block]; // binmap[(NBINS / BITSPERMAP)]한 int 형 배열에서 해당 블록을 저장한다. 해당 bin list에 free chunk가 존재한다면 0이 아닐 것이다.
       bit = idx2bit (idx); // binmap의 매핑에서 특정 비트를 추출한다. 해당 bin list에 free chunk가 존재한다면 0이 아닐 것이다.
 

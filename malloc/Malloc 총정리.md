@@ -567,45 +567,56 @@ checked_request2size(bytes, nb) 형태로 사용되는데, bytes는 사용자가
 
       
 
-5. 그런 다음, 다음 과정과 같이 unsotred chunks를 체크하고, 통과된 chunk를 bin에 넣는다. 이 지점이 chunk를 bin(smallbin, largebin)에 집어넣는 유일한 부분이다. 'TAIL'에서 unsorted bin을 반복한다. 요청을 처리할 chunk를 찾았으면 리스트에서 분리한다.
+5. 그런 다음, 다음 과정과 같이 unsotred chunks를 체크하고, 통과된 chunk를 bin에 넣는다. 이 지점이 chunk를 bins(smallbin, largebin)에 집어넣는 유일한 부분이다. 'TAIL'에서 unsorted bin을 반복한다. 요청을 처리할 chunk를 찾았으면 리스트에서 분리한다. 해당 과정을 단계적으로 살펴나가면 다음과 같다.
 
-   1. `victim`은 현재 chunk를 가리킨다.
+   1. unsorted bin list의 가장 TAIL chunk가 `victim` chunk로 선택된다. 다음의 전체 과정은 `victim != unsorted_chunks (av)`하는 동안, 즉 unsorted bin list가 모두 소모될 때까지 진행된다.
 
-   2. `victim`의 chunk size가 minimum(`2*SIZE_SZ`)와 maximum(`av->system_mem`) 사이에 존재하는지 확인한다. 그렇지 않으면, error("malloc(): memory corruption")을 발생시킨다.
+   2. `victim`의 chunk size가 최소 chunk size인 minimum(`2*SIZE_SZ`)과 시스템이 허용하는 최대 메모리 size인 maximum(`av->system_mem`) 사이에 존재하는지 확인한다. 그렇지 않으면, error("malloc(): memory corruption")을 발생시킨다.
 
-   3. 만약 요청된 chunk의 size가 smallbin 범위이고, `victim`이 last remainder chunk이고, 그게 unsorted bin에 존재하는 유일한 chunk이고, 그 chunk size가 요청된 크기보다 크거나 같다면, 해당 chunk는 다음 두 chunk로 나뉘게 된다.
+   3. 만약 요청된 chunk의 size가 smallbin 범위이고, `victim`이 unsorted bin에 존재하는 유일한 chunk이고, last remainder chunk이며, `victim`의 chunk size가 (요청된 크기 + 최소 chunk size)보다 크거나 같은 경우
 
-      - 첫 번째 chunk는 요청된 size에 맞춰서 리턴된다.
-      - 남은 chunk가 new last remainder chunk가 된다. 해당 chunk는 unsorted bin의 끝에 추가된다.
-        1. 두 chunk들의 `chunk_size`와 `chunk_prev_size` 필드가 적절하게 설정된다.
-        2. 첫 번째 chunk는 `alloc_perturb`가 호출된 이 후에 리턴된다.
+      1.  victim은 다음 두 chunk로 나뉘게 된다.
 
-   4. 만약 위 조건들(3.)을 만족하지 못한다면 이 항목에 도달하게 된다. unsorted bin에서 `victim`을 제거한다. 만약 `victim`이 요청된 size와 정확하게 일치한다면, `alloc_perturb`를 호출한 뒤 이 chunk를 리턴한다.
+         - 요청된 size에 맞춰서 반환될 첫 번째 chunk(victim).
+         - 사용자의 요청을 처리하고 남은 remainder chunk. 해당 chunk는 new last remainder chunk가 되며, unsorted bin에 추가된다. (이제 이 chunk가 unsorted bin list의 유일한 chunk가 됨)
 
-   5. victim의 크기에 맞는 bin의 리스트의 제일 처음에 삽입한다. 만약 victim이 large bin에 속한다면 large bin 내의 다른 chunk들과 크기를 비교하여 적절한 위치에 삽입된다.
+      2. remainder chunk의 size가 large bin size라면, remainder chunk의 next_size를 모두 NULL로 채운다.
 
-   6. 만약 `victim`의 size가 smallbin 범위라면, 이 chunk를 적절한 smallbin의 `HEAD`에 추가한다.
+      3. 두 chunks의 `size`와 `prev_inuse` 필드가 적절하게 설정된다. remainder chunk의 물리적으로 next chunk의 prev_size 필드에는 remainder chunk size를 저장한다.
 
-   7. 그렇지 않다면 정렬된 순서를 유지하며, 적절한 largebin에 추가한다. 현재 검사한 victim의 크기는 해당 bin 내에 있는 가장 큰 chunk의 크기이므로 이보다 큰 요청은 해당 bin에서 처리할 수 없음.
+      4. `victim`에 `alloc_perturb`을 호출하여 초기화한 뒤, 반환한다. (종료)
 
-      - 이제 victim을 victim->bk_nextsize로 설정하여 가장 작은 last chunk를 체크한다. 만약 `victim`이 last chunk보다 더 작다면, 마지막에 추가한다. (큰거부터 내림차순으로 정렬)
+         
 
-      - 그렇지 않다면, 루프를 실행하여 `victim`의 size보다 작거나 같은 chunk size를 찾는다. 크기가 같으면 항상 두 번째 위치에 삽입한다. 
+   4. 만약 위 조건들(3.)을 만족하지 못한다면 이 항목에 도달하게 된다. unsorted bin list에서 `victim`을 제거한다. 만약 `victim`이 요청된 size와 정확하게 일치한다면, `alloc_perturb`를 호출하여 초기화 한 뒤, victim을 반환한다. (종료)
 
-   8. 이 전체 과정을 `MAX_ITERS` (10000)의 maximum 번 반복하거나, unsorted bin의 모든 chunk가 고갈될 때까지 반복한다.
+   5. victim의 size에 맞는 bin list에 삽입한다. victim의 size에 따라 다음과 같이 나뉘어 동작한다.
+
+      - small bin size인 경우 : 그냥 집어넣는다.
+        1. 해당 bin list의 제일 처음(HEAD)에 집어 넣는다.
+      - large bin size인 경우 : 적절한 위치를 찾은 뒤, 집어 넣는다.
+        - 해당 bin list에 기존 freed chunk가 존재하지 않는 경우 : 
+          1. 해당 bin list에 victim을 추가한다.
+        - 해당 bin list에 기존 freed chunk가 존재하는 경우 : 
+          1. size에 prev_inuse bit를 설정한다. (비교 속도 향상을 위함. freed large chunk의 prev chunk는 분명 inuse bit가 설정되어 있는 chunk일 것임)
+          2. 해당 bin list의 가장 TAIL의 chunk에 NON_MAIN_ARENA bit가 설정되어 있는지 확인한다. main_arena가 아니면 오류(assert)
+          3. victim의 size가 해당 bin list 내에서 가장 작은 size를 갖는 chunk(TAIL)의 size보다 작은 경우, bin list에 victim을 추가한다. (nextsize list 포함)
+          4. 그렇지 않다면, bk_nextsize로 건너뛰는 루프를 실행하여 `victim`의 size보다 작거나 같은 chunk size를 찾는다. 크기가 같으면 항상 두 번째 위치에 추가하고(해당 size의 첫 번째 chunk는 nextsize list를 구성하기 때문), 다르면 bin list 중간에 추가하고 nextsize list에도 추가한다. 
+
+   6. 이 전체 과정을 `MAX_ITERS` (10000)의 maximum 번 반복하거나, 5.1.에서 언급했다시피 unsorted bin의 모든 chunk가 고갈될 때까지 반복한다.
 
       
 
-6. unsorted bin chunk를 체크한 뒤에, 요청된 size가 smallbin 범위가 아닌지 확인한다. 만약 그렇다면, 이제 largebin을 체크하는 거다.
+6. unsorted bin chunk를 체크한 뒤에, 요청된 size가 small bin 범위가 아닌지 확인한다. 만약 small bin 범위가 아니라면, 이제 largebin을 사용한다.
 
    1. 요청된 size에 따라서 적절한 bin에 접근하기 위해 largebin array의 index를 가져온다.
    2. 만약 the largest chunk(bin에서 첫 번째 chunk. 내림차순이기 때문에 첫 번째 chunk가 가장 크다.)의 size가 요청된 size보다 클 경우:
       1. 요청된 size보다 크거나 같은 가장 작은 size를 가진 `victim` chunk를 찾기 위해 'TAIL'에서 부터 반복한다. victim을 victim->bk_nextsize로 설정한다. 이제 victim은 해당 bin 내의 가장 작은 크기의 chunk이다. victim의 크기가 주어진 크기보다 커질 때까지 victim을 victim->bk_nextsize로 변경하는 것을 반복.
-      2. 요청을 처리할 chunk를 찾았다. 해당 bin에서 `victim`을 제거하기 위해 `unlink`를 호출한다.
+      2. 요청을 처리할 chunk를 찾았으면, 해당 bin에서 `victim`을 제거하기 위해 `unlink`를 호출한다.
       3. `victim`의 chunk에 대해 `remainder_size`를 계산한다. (`victim` chunk size - requested size 임.)
       4. 만약 이 `remainder_size`가 `MINSIZE`보다 크거나 같다면(`remainder_size` >= `MINSIZE`, minimum chunk size는 헤더에 포함되어 있음.), 해당 chunk를 두 chunk로 나눈다.
-         그렇지 않으면, 전체 `victim` chunk가 리턴된다. remainder chunk는 unsorted bin의 'TAIL'에 삽입된다. unsorted bin에서 `unsorted_chunks(av)->fd->bk == unsorted_chunks(av)`를 검사한다. 그렇지 않으면 error("malloc(): corrupted unsorted chunks")를 발생시킨다.
-      5. `alloc_perturb`를 호출한 뒤, `victim` chunk를 리턴한다.
+         그렇지 않으면, 전체 `victim` chunk가 리턴된다. remainder chunk는 unsorted bin의 'HEAD'에 삽입된다. unsorted bin에서 `unsorted_chunks(av)->fd->bk == unsorted_chunks(av)`를 검사한다. 그렇지 않으면 error("malloc(): corrupted unsorted chunks")를 발생시킨다.
+      5. `alloc_perturb`를 호출하여 초기화 한 뒤, `victim` chunk를 반환한다.
 
       
 
@@ -613,7 +624,7 @@ checked_request2size(bytes, nb) 형태로 사용되는데, bytes는 사용자가
 
    1. next bin을 체크하기 위해, bin array의 index가 증가된다.
 
-   2. empty한 bin들을 넘기기 위해 `av->binmap`을 사용한다. 현재 index에 해당하는 bitmap을 검사하여 free chunk가 있는지 확인한다. 만약 해당 bin이 empty하다면 index를 하나 증가시킨 후 검사를 다시한다. 모든 bitmap을 검사했다면 9번 과정(top chunk)으로 넘어간다.
+   2. empty한 bin들을 넘기기 위해 `av->binmap`을 사용한다. 현재 index에 해당하는 bitmap을 검사하여 free chunk가 있는지 확인한다. 만약 해당 bin이 empty하다면 index를 하나 증가시킨 후 검사를 다시한다. 모든 bitmap을 검사했다면 8번 과정(top chunk)으로 넘어간다.
 
    3. `victim`은 현재 bin의 'TAIL'을 가리킨다. bitmap이 설정된 bin이 있다면, 해당 bin 내의 가장 오래된(가장 작은 크기의) chunk를 victim 지역 변수에 저장한다.
 
@@ -621,9 +632,9 @@ checked_request2size(bytes, nb) 형태로 사용되는데, bytes는 사용자가
 
    5. binmap을 사용하는 것은 bin을 스킵할 경우, 그것이 확실하게 empty한 상태인 것을 보장한다. 하지만, 모든 bin이 스킵된다는 것을 보장하지 못한다. `victim`이 empty한지 아닌지를 확인해야 한다. 만약 `victim`이 empty하다면, nonempty bin에 도착할 때까지 bin을 스킵하고, 위의 프로세스를 반복해야한다.(혹은 이 루프를 반복한다.) 
 
-   6. victim의 크기가 요청을 처리하고도 다른 chunk를 구성할 수 있을 정도로 크다면, 분할하여 chunk를 두 개의 chunk로 나눈다.(`victim`은 nonempty chunk의 last chunk를 가리키는 상태) remainder chunk를 unsorted bin에 추가한다.(unsortd bin의 'TAIL' 끝에) chunk의 크기가 small bin에 속한다면 last_remainder 변수가 remainder chunk를 가리키도록 설정한다. unsorted bin에서 `unsorted_chunks(av)->fd->bk == unsorted_chunks(av)`인지를 확인한다. 그렇지 않으면 error("malloc(): corrupted unsorted chunks 2")를 발생시킨다.
+   6. victim의 크기가 요청을 처리하고도 다른 chunk를 구성할 수 있을 정도로 크다면, 분할하여 chunk를 두 개의 chunk로 나눈다.(`victim`은 nonempty chunk의 last chunk를 가리키는 상태) remainder chunk를 unsorted bin에 추가한다.(unsortd bin의 'TAIL'에) unsorted bin에서 `unsorted_chunks(av)->fd->bk == unsorted_chunks(av)`인지를 확인한다. 그렇지 않으면 error("malloc(): corrupted unsorted chunks 2")를 발생시킨다. chunk의 크기가 small bin에 속한다면 last_remainder 변수가 remainder chunk를 가리키도록 설정한다.
 
-   7. `alloc_perturb`를 호출한 뒤, `victim` chunk를 리턴한다.
+   7. `alloc_perturb`를 호출하여 초기화 한 뒤, `victim` chunk를 반환한다.
 
       
 
@@ -631,8 +642,8 @@ checked_request2size(bytes, nb) 형태로 사용되는데, bytes는 사용자가
 
    1. `victim`은 `av->top`을 가리킨다.
    2. 만약 top chunk의 size가 요청된 크기 + `MINSIZE` 라면(size of top chunk >= requested size + `MINSIZE`), top chunk를 두 chunk로 나눈다. 이 경우, the remainder chunk가 새로운 top chunk가 되고, 남은 chunk(victim)는 `alloc_perturb` 과정을 거친 후 사용자에게 리턴된다.
-   3. 남은 arena 공간이 주어진 요청을 처리할 수 없을 경우에 주어진 요청의 크기가 small bin 영역에 속한다면 fastbin을 합병해서 할당을 시도한다. 먼저, `av`가 fastchunks인지 아닌지 확인한다.(fastbin chunk가 존재하는지 확인) 이 작업은 `av->flags`의 `FASTCHUNKS_BIT`를 확인하여 수행된다. 만약 fastchunks라면, `av`에 대해 `malloc_consolidate`를 호출한다. 6 단계(unsorted bin 체크한 곳)로 돌아간다. ? 4단계(fastbin 처리)로 돌아간다
-   4. 만약 `av`가 fastchunks를 보유하지 못 했다면, 시스템의 heap 영역을 늘려야 하기 때문에 `sysmalloc`을 호출하고, `alloc_perturb`를 호출한 뒤 얻는 포인터를 리턴한다.
+   3. 남은 arena 공간이 주어진 요청을 처리할 수 없을 경우에 주어진 요청의 크기가 small bin 영역에 속한다면 fastbin을 합병해서 할당을 시도한다. 먼저, `av`의 have_fastchunks 값을 확인한다.(fastbin chunk가 존재하는지 확인) 이 작업은 `av->flags`의 `FASTCHUNKS_BIT`를 확인하여 수행된다. 만약 fastchunks가 존재한다면, `av`에 대해 `malloc_consolidate`를 호출하여 fastbin chunks를 병합한다. 이 후, __libc_malloc()에서 재할당을 요청하면서 chunk가 할당된다.
+   4. 만약 `av`가 fastchunks를 보유하지 못 했다면, 시스템의 heap 영역을 늘려야 하기 때문에 `sysmalloc`을 호출하고, `alloc_perturb`를 호출하여 해당 chunk를 초기화한 뒤, 얻은 포인터를 반환한다.
 
 
 

@@ -2,7 +2,7 @@
 
 
 
-heap 공부는 malloc 동작 분석부터 하는게 맞는거 같다. malloc 관련해서 예전에 정리해놓은 걸 좀 더 다듬어 봤다. heap 공부를 하는 누군가에게(나를 포함한) 도움이 되기를 바란다.
+heap 공부는 malloc 동작 분석부터 하는게 맞는거 같다. malloc 관련해서 예전에 정리해놓은 걸 좀 더 다듬어 봤다. heap 공부를 하는 누군가에게(나를 포함한) 도움이 되기를 바람
 
 glibc는 점점 update되어가며 사용자에게 다양한 기능을 제공하고 있다. 발견된 취약점, 매크로 상수들에 대한 패치와 같이 함수 동작에 대해 아주 크게 영향을 끼치지 않는 update가 있는 반면, 새로운 자료형 및 함수들을 추가하여 함수 동작에 큰 영향을 끼치는 update도 존재한다.
 
@@ -28,7 +28,11 @@ locking
 
 원래 glibc-2.26의 malloc만 분석하려고 했는데 그냥 쓰는 김에 둘 다 서술해보도록 하겠다.
 
+일단 glibc-2.25의 malloc()를 분석해보자.
 
+
+
+chunk의 구조라던가하는 기본적인 배경지식은 있다고 가정하고 진행한다. 
 
 ### __libc_malloc
 
@@ -85,11 +89,23 @@ libc_hidden_def (__libc_malloc)
 
 
 
+오오 많이 보던 __malloc_hook 녀석이 보인다. 
+
+낯선 곳에서 아는 녀석을 보니 앞으로 이녀석과 좀 더 잘해볼 수 있을 것 같은 마음이 든다.
+
+
+
+다음은 malloc() 함수의 핵심이라고 볼 수 있는 _int_malloc() 함수이다.
+
+주석까지 합하면 600줄 정도 되는 것 같다.
+
+내가 모르는 곳에서 열심히 일 했을 녀석에게 안쓰러운 마음이 든다. 이녀석은 좀 더 잘 대해줘야 할 것 같다.
+
 ### _int_malloc
 
 _int_malloc() 함수는 다음과 같이 동작한다. arena와 bytes(=사용자가 요청한 malloc 크기)를 인자로 받는다. 
 
-##### _int_malloc의 local 변수
+#### _int_malloc의 local 변수
 
 ```c
 static void *
@@ -120,7 +136,7 @@ _int_malloc (mstate av, size_t bytes)
 
 
 
-##### size 변환
+#### size 변환
 
 ```c
   /*
@@ -138,7 +154,7 @@ SIZE_SZ bytes의 추가적인 overhead를 얻고, 사용가능한 alignment 단�
 
 
 
-##### 사용가능한 arena가 없을 경우
+#### 사용가능한 arena가 없을 경우
 
 ```c
   /* There are no usable arenas.  Fall back to sysmalloc to get a chunk from
@@ -156,7 +172,7 @@ SIZE_SZ bytes의 추가적인 overhead를 얻고, 사용가능한 alignment 단�
 
 
 
-##### fastbin range인 경우
+#### size가 fastbin 범위인 경우
 
 ```c
   /*
@@ -172,7 +188,7 @@ SIZE_SZ bytes의 추가적인 overhead를 얻고, 사용가능한 alignment 단�
     {
       idx = fastbin_index (nb); // nb에 해당하는 fastbin의 idx 값을 저장
       mfastbinptr *fb = &fastbin (av, idx); // arena에서 fastbin의 해당 idx 주소를 저장 &((ar_ptr)->fastbinsY[idx])과 같음.
-      mchunkptr pp = *fb; // 해당 size의 fastbin list의 시작 주소 저장.
+      mchunkptr pp = *fb; // 해당 bin list의 첫 번째(가장 앞 쪽, HEAD) chunk 주소를 저장한다.
       do
         {
           victim = pp; // victim에 앞쪽 chunk의 주소가 저장된다.
@@ -200,9 +216,7 @@ SIZE_SZ bytes의 추가적인 overhead를 얻고, 사용가능한 alignment 단�
 
 
 
-
-
-##### smallbin range인 경우
+#### size가 small bin 범위인 경우
 
 ```c
   /*
@@ -246,9 +260,7 @@ SIZE_SZ bytes의 추가적인 overhead를 얻고, 사용가능한 alignment 단�
     }
 ```
 
-
-
-##### 사용되는 매크로 함수들
+###### 여서 사용되는 매크로 함수들
 
 ```c
 #define in_smallbin_range(sz)  \
@@ -319,15 +331,7 @@ do_check_remalloced_chunk (mstate av, mchunkptr p, INTERNAL_SIZE_T s)
 
 
 
-
-
-
-
-
-
-
-
-##### consolidation(병합과정) fragment(단편화) 해결
+#### size가 large bin 범위인 경우, consolidation(병합과정) fragment(단편화) 해결
 
 ```c
   /*
@@ -352,33 +356,285 @@ do_check_remalloced_chunk (mstate av, mchunkptr p, INTERNAL_SIZE_T s)
     }
 ```
 
+얜 좀 딸린 식구가 많다.
 
-
-###### malloc_consolidate
+###### malloc_consolidate()
 
 ```c
+/*
+  ------------------------- malloc_consolidate -------------------------
 
+  malloc_consolidate is a specialized version of free() that tears
+  down chunks held in fastbins.  Free itself cannot be used for this
+  purpose since, among other things, it might place chunks back onto
+  fastbins.  So, instead, we need to use a minor variant of the same
+  code.
+  malloc_consolidate는 fastbins에 저장된 chunks들을 해체하는 특수한 free()이다.
+  free()는 다른 것들 중에서, chunks를 도로 fastbins에 저장할 수 있기 때문에, free() 자체는 이 목적을 위해 사용될 수 없다. 그래서 대신에, 같은 코드를 약간 변형시켜 사용해야한다.
+
+  Also, because this routine needs to be called the first time through
+  malloc anyway, it turns out to be the perfect place to trigger
+  initialization code.
+  또한, 이 루틴은 malloc을 통해 처음 호출되야 하기때문에, 초기화 코드를 실행시키기에 가장 적합한 위치라고 할 수 있다.
+*/
+
+static void malloc_consolidate(mstate av)
+{
+  mfastbinptr*    fb;                 /* current fastbin being consolidated */
+  mfastbinptr*    maxfb;              /* last fastbin (for loop control) */
+  mchunkptr       p;                  /* current chunk being consolidated */
+  mchunkptr       nextp;              /* next chunk to consolidate */
+  mchunkptr       unsorted_bin;       /* bin header */
+  mchunkptr       first_unsorted;     /* chunk to link to */
+
+  /* These have same use as in free() */
+  mchunkptr       nextchunk;
+  INTERNAL_SIZE_T size;
+  INTERNAL_SIZE_T nextsize;
+  INTERNAL_SIZE_T prevsize;
+  int             nextinuse;
+  mchunkptr       bck;
+  mchunkptr       fwd;
+
+  /*
+    If max_fast is 0, we know that av hasn't
+    yet been initialized, in which case do so below
+    global_max_fast (fastbin에서 처리되는 메모리의 최대 크기) 값이 0이라면, av가 초기화되지 않았다는 뜻이므로, 아래의 과정(else문)을 수행한다.
+  */
+  if (get_max_fast () != 0) { // 초기화가 된 경우
+    clear_fastchunks(av); // av의 FASTCHUNKS_BIT를 제거한다.
+
+    unsorted_bin = unsorted_chunks(av); // unsorted bin header chunk를 저장한다.
+
+    /*
+      Remove each chunk from fast bin and consolidate it, placing it
+      then in unsorted bin. Among other reasons for doing this,
+      placing in unsorted bin avoids needing to calculate actual bins
+      until malloc is sure that chunks aren't immediately going to be
+      reused anyway.
+      fastbin에서 각각의 chunk를 제거하고, 병합시킨 다음, unsorted bin에 집어넣는다.
+      이 작업을 하는 다른 이유들 중, unsorted bin에 집어넣는 것은 malloc이 chunks가 즉시 재사용되지 않을 것이라고 확신할 때까지 실제 bin을 계산할 필요가 없다는 것이 있다.
+    */
+
+    maxfb = &fastbin (av, NFASTBINS - 1); // fastbin 최대 bin list 주소
+    fb = &fastbin (av, 0); // fastbin 최소 bin list 주소
+    do { // fb가 maxfb가 될 때까지 반복한다.
+      p = atomic_exchange_acq (fb, NULL); // fb에 lock을 건다. 
+      if (p != 0) { // lock이 제대로 걸린 경우 동작한다.
+	do { // 해당 fastbinlist 내에 free된 chunk가 모두 소모될 때까지 반복한다.
+	  check_inuse_chunk(av, p); // 제대로 chunk로서 기능을 하는지에 대한 검사와, 물리적으로 next chunk에 prev_inuse bit가 제대로 걸려있는지 확인한다. (fastbin에 대해서는 늘 next chunk의 prev_inuse bit가 설정된다.)
+	  nextp = p->fd; // binlist 내의 next chunk를 저장한다.
+
+	  /* Slightly streamlined version of consolidation code in free() 
+      free()의 병합 코드가 약간 간소화된 버전이다.
+    */
+	  size = chunksize (p); // 현재 chunk의 size를 저장한다.
+	  nextchunk = chunk_at_offset(p, size); // 물리적으로 next chunk 저장
+	  nextsize = chunksize(nextchunk); // next chunk의 size를 저장한다.
+
+	  if (!prev_inuse(p)) { // 이전 chunk에대해 prev_inuse bit가 설정되지 않았다면(prev chunk가 free된 상태라면, fastbin인 경우 항상 next chunk(물리적)의 prev_inuse bit가 설정된다.)
+	    prevsize = prev_size (p);
+	    size += prevsize;
+	    p = chunk_at_offset(p, -((long) prevsize)); // p에 prev chunk의 offset을 저장한다.
+	    unlink(av, p, bck, fwd); // p는 항상 이중 연결리스트로 된 binlist이므로 unlink를 이용하여 binlist에서 제거한다.
+	  }
+
+	  if (nextchunk != av->top) { // nextchunk가 top chunk가 아닐 경우
+	    nextinuse = inuse_bit_at_offset(nextchunk, nextsize); // nextchunk에대해 next chunk(물리적)의 prev_inuse bit를 확인하여 nextchunk가 사용 중인지 확인한다.(fastbin이 아닌 free된 chunk인지 확인)
+
+	    if (!nextinuse) { // nextchunk가 fastbin이 아닌 free된 chunk인 경우
+	      size += nextsize;
+	      unlink(av, nextchunk, bck, fwd); // binlist에서 제거한다.
+	    } else // nextchunk가 fastbin이거나 free된 chunk가 아닐 경우
+	      clear_inuse_bit_at_offset(nextchunk, 0); // 현재 fastbin chunk에 대한 prev_inuse bit를 제거한다.
+
+      // ** unsorted bin의 앞 쪽에 새로운 chunk를 추가한다. **
+	    first_unsorted = unsorted_bin->fd;
+	    unsorted_bin->fd = p;
+	    first_unsorted->bk = p;
+
+	    if (!in_smallbin_range (size)) { // 해당 bin이 large bin size인 경우 nextsize를 초기화한다.
+	      p->fd_nextsize = NULL;
+	      p->bk_nextsize = NULL;
+	    }
+
+	    set_head(p, size | PREV_INUSE); // 물리적으로 이전 chunk는 사용 중인 chunk이므로 prev_inuse bit를 설정한다. (p의 prev_inuse bit이 1인 경우였거나, 혹은 p 이전의 prev chunk가 free된 chunk였다면 bins의 속하는 chunk였다면 이미 해당 chunk의 prev chunk와 병합했을 것이기 때문)
+	    p->bk = unsorted_bin;
+	    p->fd = first_unsorted;
+	    set_foot(p, size); // 병합한 p에대해 물리적으로 next chunk의 prev_size에 값을 저장한다.
+	  }
+
+	  else { // next chunk가 top chunk인 경우, top chunk와 병합된다.
+	    size += nextsize;
+	    set_head(p, size | PREV_INUSE); // top chunk의 prev_inuse bit를 설정한다.
+	    av->top = p; // top chunk가 된다.
+	  }
+
+	} while ( (p = nextp) != 0); // 해당 fastbinlist 내에 free된 chunk가 모두 소모될 때까지 반복한다.
+
+      }
+    } while (fb++ != maxfb); // fb가 maxfb가 될 때까지 반복한다.
+  }
+  else { // av 초기화가 되지 않은 경우
+    malloc_init_state(av); // av를 초기화시켜준다.
+    check_malloc_state(av); // 해당 arena에 대해서 chunk들이 정상적으로 관계되어 있는지 확인한다.
+  }
+}
+```
+
+###### malloc_init_state()
+
+```c
+/*
+   Initialize a malloc_state struct.
+
+   This is called only from within malloc_consolidate, which needs
+   be called in the same contexts anyway.  It is never called directly
+   outside of malloc_consolidate because some optimizing compilers try
+   to inline it at all call points, which turns out not to be an
+   optimization at all. (Inlining it in malloc_consolidate is fine though.)
+ */
+
+static void
+malloc_init_state (mstate av)
+{
+  int i;
+  mbinptr bin;
+
+  /* Establish circular links for normal bins */
+  for (i = 1; i < NBINS; ++i)
+    {
+      bin = bin_at (av, i);
+      bin->fd = bin->bk = bin;
+    }
+
+#if MORECORE_CONTIGUOUS
+  if (av != &main_arena)
+#endif
+  set_noncontiguous (av);
+  if (av == &main_arena)
+    set_max_fast (DEFAULT_MXFAST);
+  av->flags |= FASTCHUNKS_BIT;
+
+  av->top = initial_top (av);
+}
+```
+
+malloc_init_state()로 초기화 전과 초기화 후의 arena_header를 살펴보면 다음과 같다.
+
+초기화 전 :
+
+```shell
+gdb-peda$ p main_arena
+$2 = {
+  mutex = 0x0,
+  flags = 0x0,
+  have_fastchunks = 0x0,
+  fastbinsY = {0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0},
+  top = 0x0,
+  last_remainder = 0x0,
+  bins = {0x0 <repeats 254 times>},
+  binmap = {0x0, 0x0, 0x0, 0x0},
+  next = 0x7fffff3ebc40 <main_arena>,
+  next_free = 0x0,
+  attached_threads = 0x1,
+  system_mem = 0x0,
+  max_system_mem = 0x0
+}
+gdb-peda$ p &main_arena
+$3 = (struct malloc_state *) 0x7fffff3ebc40 <main_arena>
+gdb-peda$ x/50gx 0x7fffff3ebc40
+0x7fffff3ebc40 <main_arena>:    0x0000000000000000      0x0000000000000000
+0x7fffff3ebc50 <main_arena+16>: 0x0000000000000000      0x0000000000000000
+0x7fffff3ebc60 <main_arena+32>: 0x0000000000000000      0x0000000000000000
+0x7fffff3ebc70 <main_arena+48>: 0x0000000000000000      0x0000000000000000
+0x7fffff3ebc80 <main_arena+64>: 0x0000000000000000      0x0000000000000000
+0x7fffff3ebc90 <main_arena+80>: 0x0000000000000000      0x0000000000000000
+0x7fffff3ebca0 <main_arena+96>: 0x0000000000000000      0x0000000000000000
+0x7fffff3ebcb0 <main_arena+112>:        0x0000000000000000      0x0000000000000000
+0x7fffff3ebcc0 <main_arena+128>:        0x0000000000000000      0x0000000000000000
+0x7fffff3ebcd0 <main_arena+144>:        0x0000000000000000      0x0000000000000000
+0x7fffff3ebce0 <main_arena+160>:        0x0000000000000000      0x0000000000000000
+0x7fffff3ebcf0 <main_arena+176>:        0x0000000000000000      0x0000000000000000
+0x7fffff3ebd00 <main_arena+192>:        0x0000000000000000      0x0000000000000000
+0x7fffff3ebd10 <main_arena+208>:        0x0000000000000000      0x0000000000000000
+0x7fffff3ebd20 <main_arena+224>:        0x0000000000000000      0x0000000000000000
+0x7fffff3ebd30 <main_arena+240>:        0x0000000000000000      0x0000000000000000
+0x7fffff3ebd40 <main_arena+256>:        0x0000000000000000      0x0000000000000000
+0x7fffff3ebd50 <main_arena+272>:        0x0000000000000000      0x0000000000000000
+0x7fffff3ebd60 <main_arena+288>:        0x0000000000000000      0x0000000000000000
+0x7fffff3ebd70 <main_arena+304>:        0x0000000000000000      0x0000000000000000
+0x7fffff3ebd80 <main_arena+320>:        0x0000000000000000      0x0000000000000000
+```
+
+초기화 후 :
+
+```shell
+gdb-peda$ p main_arena
+$4 = {
+  mutex = 0x0,
+  flags = 0x0,
+  have_fastchunks = 0x0,
+  fastbinsY = {0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0},
+  top = 0x8402270,
+  last_remainder = 0x0,
+  bins = {0x7fffff3ebca0 <main_arena+96>, 0x7fffff3ebca0 <main_arena+96>, 0x7fffff3ebcb0 <main_arena+112>,
+    0x7fffff3ebcb0 <main_arena+112>, 0x7fffff3ebcc0 <main_arena+128>, 0x7fffff3ebcc0 <main_arena+128>,
+    0x7fffff3ebcd0 <main_arena+144>, 0x7fffff3ebcd0 <main_arena+144>, 0x7fffff3ebce0 <main_arena+160>,
+    0x7fffff3ebce0 <main_arena+160>, 0x7fffff3ebcf0 <main_arena+176>, 0x7fffff3ebcf0 <main_arena+176>,
+    0x7fffff3ebd00 <main_arena+192>, 0x7fffff3ebd00 <main_arena+192>, 0x7fffff3ebd10 <main_arena+208>,
+..(중략)
+<main_arena+1648>,
+    0x7fffff3ec2b0 <main_arena+1648>, 0x7fffff3ec2c0 <main_arena+1664>, 0x7fffff3ec2c0 <main_arena+1664>,
+    0x7fffff3ec2d0 <main_arena+1680>, 0x7fffff3ec2d0 <main_arena+1680>...},
+  binmap = {0x0, 0x0, 0x0, 0x0},
+  next = 0x7fffff3ebc40 <main_arena>,
+  next_free = 0x0,
+  attached_threads = 0x1,
+  system_mem = 0x21000,
+  max_system_mem = 0x21000
+}
+gdb-peda$ x/50gx 0x7fffff3ebc40
+0x7fffff3ebc40 <main_arena>:    0x0000000000000000      0x0000000000000000
+0x7fffff3ebc50 <main_arena+16>: 0x0000000000000000      0x0000000000000000
+0x7fffff3ebc60 <main_arena+32>: 0x0000000000000000      0x0000000000000000
+0x7fffff3ebc70 <main_arena+48>: 0x0000000000000000      0x0000000000000000
+0x7fffff3ebc80 <main_arena+64>: 0x0000000000000000      0x0000000000000000
+0x7fffff3ebc90 <main_arena+80>: 0x0000000000000000      0x0000000000000000
+0x7fffff3ebca0 <main_arena+96>: 0x0000000008402270      0x0000000000000000
+0x7fffff3ebcb0 <main_arena+112>:        0x00007fffff3ebca0      0x00007fffff3ebca0
+0x7fffff3ebcc0 <main_arena+128>:        0x00007fffff3ebcb0      0x00007fffff3ebcb0
+0x7fffff3ebcd0 <main_arena+144>:        0x00007fffff3ebcc0      0x00007fffff3ebcc0
+0x7fffff3ebce0 <main_arena+160>:        0x00007fffff3ebcd0      0x00007fffff3ebcd0
+0x7fffff3ebcf0 <main_arena+176>:        0x00007fffff3ebce0      0x00007fffff3ebce0
+0x7fffff3ebd00 <main_arena+192>:        0x00007fffff3ebcf0      0x00007fffff3ebcf0
+0x7fffff3ebd10 <main_arena+208>:        0x00007fffff3ebd00      0x00007fffff3ebd00
+0x7fffff3ebd20 <main_arena+224>:        0x00007fffff3ebd10      0x00007fffff3ebd10
+0x7fffff3ebd30 <main_arena+240>:        0x00007fffff3ebd20      0x00007fffff3ebd20
+0x7fffff3ebd40 <main_arena+256>:        0x00007fffff3ebd30      0x00007fffff3ebd30
+0x7fffff3ebd50 <main_arena+272>:        0x00007fffff3ebd40      0x00007fffff3ebd40
+0x7fffff3ebd60 <main_arena+288>:        0x00007fffff3ebd50      0x00007fffff3ebd50
+0x7fffff3ebd70 <main_arena+304>:        0x00007fffff3ebd60      0x00007fffff3ebd60
+0x7fffff3ebd80 <main_arena+320>:        0x00007fffff3ebd70      0x00007fffff3ebd70
+0x7fffff3ebd90 <main_arena+336>:        0x00007fffff3ebd80      0x00007fffff3ebd80
+0x7fffff3ebda0 <main_arena+352>:        0x00007fffff3ebd90      0x00007fffff3ebd90
 ```
 
 
 
-
-
-
+#### 중간 점검
 
 앞선 코드들에서 포인터를 리턴하지 않고, 여기까지 도달하였다면 이는 다음 중 한가지이상을 의미한다.
 
 1. fastbin range이지만, 사용가능한 fastbin chunk가 존재하지 않는 경우
 
-2. smallbin range이지만, 사용가능한 smallbin chunk가 존재하지 않는 경우(초기화 중 malloc_consolidate를 호출)
+2. size가 smallbin 범위이지만, 사용가능한 small chunk가 존재하지 않는 경우(위의 동작 수행 중 `malloc_consolidate`를 호출한 경우 포함)
 
 3. size가 large bin range인 경우
 
 
 
-
-
-##### unsorted bin인 경우
+#### unsorted bin에서 뒤져보자
 
 ```c
   /*
@@ -554,16 +810,11 @@ do_check_remalloced_chunk (mstate av, mchunkptr p, INTERNAL_SIZE_T s)
           if (++iters >= MAX_ITERS) // unsorted bin의 chunk들의 size를 싹다 뒤져보며 할당하기 적합한 chunk를 찾는 이 동작은, unsorted bin에 존재하는 모든 chunk를 소모하거나, MAX_ITERS 값(10000)만큼 반복한다.
             break;
         }
-
 ```
 
 
 
-
-
-
-
-##### large bin인 경우
+#### large bin에서 뒤져보자
 
 ```c
       /*
@@ -649,11 +900,7 @@ do_check_remalloced_chunk (mstate av, mchunkptr p, INTERNAL_SIZE_T s)
         }
 ```
 
-
-
-
-
-
+###### 사용하는 매크로 함수
 
 ```c
 /* Set size/use field */
@@ -665,9 +912,11 @@ do_check_remalloced_chunk (mstate av, mchunkptr p, INTERNAL_SIZE_T s)
 
 
 
+위에서는 딱 요청한 size에 맞는 bin list에서만 chunk를 찾아보았다. 다음에서는 더 큰 bin list에서 요청을 처리할 수 있는 chunk를 찾아본다.
 
 
-##### binmap을 이용하여 더 큰 bin list에서 검색
+
+#### binmap을 이용하여 더 큰 bin list에서 뒤져보자
 
 ```c
       /*
@@ -685,9 +934,9 @@ do_check_remalloced_chunk (mstate av, mchunkptr p, INTERNAL_SIZE_T s)
          아직 어떤 chunk도 반환되지 않은 warm-up 단계(앞선 단계들)동안 모든 bins를 건너 뛰는 특별한 경우는 생각보다 빠르다. 
        */
 
-      ++idx; // large bin list의 index 값을 증가시킨다.
-      bin = bin_at (av, idx); // large bin list의 header chunk를 저장한다.
-      block = idx2block (idx); // 해당 large bin list에서 index에 맞는 블록을 저장한다. (shift 연산 수행)
+      ++idx; // bin list의 index 값을 증가시킨다.
+      bin = bin_at (av, idx); // bin list의 header chunk를 저장한다.
+      block = idx2block (idx); // 해당 bin list에서 index에 맞는 블록을 저장한다. (shift 연산 수행)
       map = av->binmap[block]; // binmap[(NBINS / BITSPERMAP)]한 int 형 배열에서 해당 블록을 저장한다. 해당 bin list에 free chunk가 존재한다면 0이 아닐 것이다.
       bit = idx2bit (idx); // binmap의 매핑에서 특정 비트를 추출한다. 해당 bin list에 free chunk가 존재한다면 0이 아닐 것이다.
 
@@ -801,11 +1050,7 @@ do_check_remalloced_chunk (mstate av, mchunkptr p, INTERNAL_SIZE_T s)
         }
 ```
 
-
-
-
-
-##### binmap 매크로 함수들
+###### binmap 매크로 함수들
 
 ```c
 /*
@@ -836,9 +1081,7 @@ do_check_remalloced_chunk (mstate av, mchunkptr p, INTERNAL_SIZE_T s)
 
 
 
-
-
-##### top chunk에서 할당
+#### 어쩔 수 없다 top chunk에서 할당받자
 
 ```c
 
@@ -912,131 +1155,138 @@ do_check_remalloced_chunk (mstate av, mchunkptr p, INTERNAL_SIZE_T s)
 
 
 
+#### 요약이라고 썻지만 그냥 한국말
+
+1. checked_request2size 함수를 통해서 요청한 크기를 chunk 크기에 맞춘다. x64 기준으로 8bytes를 더한 후 align(0x10의 배수)에 맞추어 계산한다. 이 후 chunk의 크기는 이 값으로 사용한다.
+
+2. 사용 가능한 arena가 존재하지 않은 경우(av == NULL), mmap을 사용하여 chunk를  얻기 위해 sysmalloc을 호출한다. sysmalloc을 이용하여 메모리를 할당받는데에 성공하면 alloc_perturb를 호출하여 메모리를 초기화한 뒤, 포인터를 반환한다. (종료)
+
+3. size가 포함되는 범위에 따라 다음과 같이 나뉘어 동작한다.
+
+   - size가 fastbin 범위인 경우
+     1. 요청된 size에 따라서 적절한 bin에 접근하기 위해 fastbin array의 index를 가져온다.
+     2. arena와 index를 이용하여 해당 size에 맞는 bin list의 주소를 가져온다.
+     3. 해당 bin list의 첫 번째(가장 앞 쪽, HEAD) chunk를 victim에 저장한다.
+     4. `victim`이 NULL이면(해당 fastbin list에 freed chunk가 없는 경우) 다음 단계로 넘어간다. (break and go to smallbin)
+     5. (victim이 NULL이 아닌 경우) victim을 해당 fastbin list에서 제거한다. *fb == victim인지 확인하고 맞다면 *fb = victim->fd 한다. (fastbin 업데이트, LIFO 방식으로 동작)
+     6. 꺼내온 victim의 size가 실제 그 bin에 맞는 크기인지 체크한다. (fastbin에서의 크기 검사) 그렇지 않으면 error("malloc(): memory corruption (fast)")를 발생시킨다.
+     7. `alloc_perturb`를 호출하여 메모리를 초기화 한 뒤, 해당 포인터를 반환한다. (종료)
+   - size가 smallbin 범위 :
+     1. 요청된 size에 따라서 적절한 bin에 접근하기 위해 smallbin array의 index를 가져온다. (주어진 크기에 맞는 small bin의 인덱스를 계산하여 idx 지역변수에 저장한다.)
+     2. `bin->bk != bin`을 비교하는데, 이 작업을 통해 해당 인덱스 내에 가장 오래된 chunk를 `victim` 지역 변수에 저장되고(FIFO), victim이 bin 자신을 가리키는지 여부에 따라 이 bin에 chunk가 존재하는지 아닌지 확인할 수 있다. (초기화 과정에서 각 bin list는 자기 자신을 가리키도록 설정되기 때문. fd는 mchunkptr을 가리키므로 fd 주소 + 0x10을 가리킴) chunk가 존재하지 않다면, 다음 단계(large bin)으로 넘어간다.
+     3. 만약 `victim`이 NULL이라면(`initialization` 과정에서 발생, null인 경우 최초로 malloc() 함수가 호출된 경우이며, 아직 초기화가 제대로 이루어지지 않았으므로 malloc_init_state() 내부 함수를 호출하여 초기화를 수행한다.), `malloc_consolidate`를 호출하고, 다음 단계(large bin)으로 넘어간다.
+     4. 그렇지 않고 `victim`이 NULL이 아니면, `victim->bk->fd`와 `victim`이 동일한지 확인한다. 동일하지 않다면, error("malloc(): smallbin double linked list corrupted")를 발생시킨다.
+     5. `victim`의 next chunk(in memory)의 `prev_inuse` bit를 설정하여, 사용 중임을 표시한다.
+     6. bin list에서 이 chunk를 제거한다.
+     7. `av`(arena)에 따라서, 이 chunk에 적합한 arena bit를 설정한다. (main_arena 유무에 따라서 chunk size 필드에 NON_MAIN_ARENA bit 설정)
+     8. `alloc_perturb`를 호출한 뒤, 이 포인터를 리턴한다.
+   - size가 smallbin 범위가 아닐 때 (large bin에 속함):
+     1. 요청된 size에 따라서 적절한 bin에 접근하기 위해 largebin array의 index를 가져온다. 주어진 크기에 맞는 large bin의 index를 계산하여 idx 지역변수에 저장한다.
+     2. `av`가 fastchunks인지 아닌지 확인한다. 이 작업은 `av->flags`의 `FASTCHUNKS_BIT`를 체크하여 확인된다. fastchunks일 경우, `av`에 대해서 `malloc_consolidate`를 호출하여, 모든 fastbins을 병합시켜 큰 chunk로 만든다. 이는 큰 메모리 요청을 받은 경우에는 더 이상 작은 크기의 요청이 당분간 없을 것이라고 가정하기 때문임. 이로 인해 fastbin으로 인한 fragementation 문제를 줄일 수 있다.
+
+   
+
+4. 만약 여기까지 도달했다면(리턴된 포인터가 존재하지 않는다면), 이는 다음 중 하나 이상을 의미한다.
+
+   1. size가 fastbin 범위이지만, 사용가능한 fastchunk가 존재하지 않는 경우
+
+   2. size가 smallbin 범위이지만, 사용가능한 smallchunk가 존재하지 않는 경우(초기화 중 `malloc_consolidate`를 호출)
+
+   3. size가 largebin 범위인 경우
+
+      
+
+5. 그런 다음, 다음 과정과 같이 unsotred chunks를 체크하고, 통과된 chunk를 bin에 넣는다. 이 지점이 chunk를 bins(smallbin, largebin)에 집어넣는 유일한 부분이다. 'TAIL'에서 unsorted bin을 반복한다. 요청을 처리할 chunk를 찾았으면 리스트에서 분리한다. 해당 과정을 단계적으로 살펴나가면 다음과 같다.
+
+   1. unsorted bin list의 가장 TAIL chunk가 `victim` chunk로 선택된다. 다음의 전체 과정은 `victim != unsorted_chunks (av)`하는 동안, 즉 unsorted bin list가 모두 소모될 때까지 진행된다.
+
+   2. `victim`의 chunk size가 최소 chunk size인 minimum(`2*SIZE_SZ`)과 시스템이 허용하는 최대 메모리 size인 maximum(`av->system_mem`) 사이에 존재하는지 확인한다. 그렇지 않으면, error("malloc(): memory corruption")을 발생시킨다.
+
+   3. 만약 요청된 chunk의 size가 smallbin 범위이고, `victim`이 unsorted bin에 존재하는 유일한 chunk이고, last remainder chunk이며, `victim`의 chunk size가 (요청된 크기 + 최소 chunk size)보다 크거나 같은 경우
+
+      1.  victim은 다음 두 chunk로 나뉘게 된다.
+
+         - 요청된 size에 맞춰서 반환될 첫 번째 chunk(victim).
+         - 사용자의 요청을 처리하고 남은 remainder chunk. 해당 chunk는 new last remainder chunk가 되며, unsorted bin에 추가된다. (이제 이 chunk가 unsorted bin list의 유일한 chunk가 됨)
+
+      2. remainder chunk의 size가 large bin size라면, remainder chunk의 next_size를 모두 NULL로 채운다.
+
+      3. 두 chunks의 `size`와 `prev_inuse` 필드가 적절하게 설정된다. remainder chunk의 물리적으로 next chunk의 prev_size 필드에는 remainder chunk size를 저장한다.
+
+      4. `victim`에 `alloc_perturb`을 호출하여 초기화한 뒤, 반환한다. (종료)
+
+         
+
+   4. 만약 위 조건들(3.)을 만족하지 못한다면 이 항목에 도달하게 된다. unsorted bin list에서 `victim`을 제거한다. 만약 `victim`이 요청된 size와 정확하게 일치한다면, `alloc_perturb`를 호출하여 초기화 한 뒤, victim을 반환한다. (종료)
+
+   5. victim의 size에 맞는 bin list에 삽입한다. victim의 size에 따라 다음과 같이 나뉘어 동작한다.
+
+      - small bin size인 경우 : 그냥 집어넣는다.
+        1. 해당 bin list의 제일 처음(HEAD)에 집어 넣는다.
+      - large bin size인 경우 : 적절한 위치를 찾은 뒤, 집어 넣는다.
+        - 해당 bin list에 기존 freed chunk가 존재하지 않는 경우 : 
+          1. 해당 bin list에 victim을 추가한다.
+        - 해당 bin list에 기존 freed chunk가 존재하는 경우 : 
+          1. size에 prev_inuse bit를 설정한다. (비교 속도 향상을 위함. freed large chunk의 prev chunk는 분명 inuse bit가 설정되어 있는 chunk일 것임)
+          2. 해당 bin list의 가장 TAIL의 chunk에 NON_MAIN_ARENA bit가 설정되어 있는지 확인한다. main_arena가 아니면 오류(assert)
+          3. victim의 size가 해당 bin list 내에서 가장 작은 size를 갖는 chunk(TAIL)의 size보다 작은 경우, bin list에 victim을 추가한다. (nextsize list 포함)
+          4. 그렇지 않다면, bk_nextsize로 건너뛰는 루프를 실행하여 `victim`의 size보다 작거나 같은 chunk size를 찾는다. 크기가 같으면 항상 두 번째 위치에 추가하고(해당 size의 첫 번째 chunk는 nextsize list를 구성하기 때문), 다르면 bin list 중간에 추가하고 nextsize list에도 추가한다. 
+
+   6. 이 전체 과정을 `MAX_ITERS` (10000)의 maximum 번 반복하거나, 5.1.에서 언급했다시피 unsorted bin의 모든 chunk가 고갈될 때까지 반복한다.
+
+      
+
+6. unsorted bin chunk를 체크한 뒤에, 요청된 size가 small bin 범위가 아닌지 확인한다. 만약 small bin 범위가 아니라면, 이제 largebin을 사용한다.
+
+   1. 요청된 size에 따라서 적절한 bin에 접근하기 위해 largebin array의 index를 가져온다.
+
+   2. 만약 the largest chunk(bin에서 첫 번째 chunk. 내림차순이기 때문에 첫 번째 chunk가 가장 크다.)의 size가 요청된 size보다 클 경우:
+
+      1. 요청된 size보다 크거나 같은 가장 작은 size를 가진 `victim` chunk를 찾기 위해 'TAIL'에서 부터 반복한다. victim을 victim->bk_nextsize로 설정한다. 이제 victim은 해당 bin 내의 가장 작은 크기의 chunk이다. victim의 크기가 주어진 크기보다 커질 때까지 victim을 victim->bk_nextsize로 변경하는 것을 반복.
+      2. 요청을 처리할 chunk를 찾았으면, 해당 bin에서 `victim`을 제거하기 위해 `unlink`를 호출한다.
+      3. `victim`의 chunk에 대해 `remainder_size`를 계산한다. (`victim` chunk size - requested size 임.)
+      4. 만약 이 `remainder_size`가 `MINSIZE`보다 크거나 같다면(`remainder_size` >= `MINSIZE`, minimum chunk size는 헤더에 포함되어 있음.), 해당 chunk를 두 chunk로 나눈다.
+         그렇지 않으면, 전체 `victim` chunk가 리턴된다. remainder chunk는 unsorted bin의 'HEAD'에 삽입된다. unsorted bin에서 `unsorted_chunks(av)->fd->bk == unsorted_chunks(av)`를 검사한다. 그렇지 않으면 error("malloc(): corrupted unsorted chunks")를 발생시킨다.
+      5. `alloc_perturb`를 호출하여 초기화 한 뒤, `victim` chunk를 반환한다.
+
+      
+
+7. 지금까지는, unsorted bin과 각 각의 fast, small, large bin들에 대해 검사를 진행했다. 요청된 chunk의 정확한 size를 이용하여 fast나 small bin같은 single bin을 검사하였다. 모든 bin을 사용할 때까지 다음 단계를 반복한다. 여기까지 왔다면 해당하는 bin 내에서 적당한 chunk를 찾지 못한 거다. idx 값을 하나 증가시킨 후 더 큰 크기의 bin 내에 free chunk가 있는지 확인한다. bitmap을 이용해 빨리 확인할 수 있다.
+
+   1. next bin을 체크하기 위해, bin array의 index가 증가된다.
+
+   2. empty한 bin들을 넘기기 위해 `av->binmap`을 사용한다. 현재 index에 해당하는 bitmap을 검사하여 free chunk가 있는지 확인한다. 만약 해당 bin이 empty하다면 index를 하나 증가시킨 후 검사를 다시한다. 모든 bitmap을 검사했다면 8번 과정(top chunk)으로 넘어간다.
+
+   3. `victim`은 현재 bin의 'TAIL'을 가리킨다. bitmap이 설정된 bin이 있다면, 해당 bin 내의 가장 오래된(가장 작은 크기의) chunk를 victim 지역 변수에 저장한다.
+
+   4. victim을 list에서 분리한다. unlink
+
+   5. binmap을 사용하는 것은 bin을 스킵할 경우, 그것이 확실하게 empty한 상태인 것을 보장한다. 하지만, 모든 bin이 스킵된다는 것을 보장하지 못한다. `victim`이 empty한지 아닌지를 확인해야 한다. 만약 `victim`이 empty하다면, nonempty bin에 도착할 때까지 bin을 스킵하고, 위의 프로세스를 반복해야한다.(혹은 이 루프를 반복한다.) 
+
+   6. victim의 크기가 요청을 처리하고도 다른 chunk를 구성할 수 있을 정도로 크다면, 분할하여 chunk를 두 개의 chunk로 나눈다.(`victim`은 nonempty chunk의 last chunk를 가리키는 상태) remainder chunk를 unsorted bin에 추가한다.(unsortd bin의 'TAIL'에) unsorted bin에서 `unsorted_chunks(av)->fd->bk == unsorted_chunks(av)`인지를 확인한다. 그렇지 않으면 error("malloc(): corrupted unsorted chunks 2")를 발생시킨다. chunk의 크기가 small bin에 속한다면 last_remainder 변수가 remainder chunk를 가리키도록 설정한다.
+
+   7. `alloc_perturb`를 호출하여 초기화 한 뒤, `victim` chunk를 반환한다.
+
+      
+
+8. 만약 어떤 empty한 bin도 발견하지 못 한다면, 요청을 처리하기 위해 top chunk가 사용된다.
+
+   1. `victim`은 `av->top`을 가리킨다.
+   2. 만약 top chunk의 size가 요청된 크기 + `MINSIZE` 라면(size of top chunk >= requested size + `MINSIZE`), top chunk를 두 chunk로 나눈다. 이 경우, the remainder chunk가 새로운 top chunk가 되고, 남은 chunk(victim)는 `alloc_perturb` 과정을 거친 후 사용자에게 리턴된다.
+   3. 남은 arena 공간이 주어진 요청을 처리할 수 없을 경우에 주어진 요청의 크기가 small bin 영역에 속한다면 fastbin을 합병해서 할당을 시도한다. 먼저, `av`의 have_fastchunks 값을 확인한다.(fastbin chunk가 존재하는지 확인) 이 작업은 `av->flags`의 `FASTCHUNKS_BIT`를 확인하여 수행된다. 만약 fastchunks가 존재한다면, `av`에 대해 `malloc_consolidate`를 호출하여 fastbin chunks를 병합한다. 이 후, __libc_malloc()에서 재할당을 요청하면서 chunk가 할당된다.
+   4. 만약 `av`가 fastchunks를 보유하지 못 했다면, 시스템의 heap 영역을 늘려야 하기 때문에 `sysmalloc`을 호출하고, `alloc_perturb`를 호출하여 해당 chunk를 초기화한 뒤, 얻은 포인터를 반환한다.
 
 
 
+###### Reference
 
-##### malloc_consolidate()
+https://heap-exploitation.dhavalkapil.com/
+https://www.blackhat.com/presentations/bh-usa-07/Ferguson/Whitepaper/bh-usa-07-ferguson-WP.pdf
+https://tribal1012.tistory.com/141
+http://studyfoss.egloos.com/5206979
+https://say2.tistory.com/entry/glibc-mallocc%EC%9D%98-malloc%ED%95%A8%EC%88%98-%EB%B6%84%EC%84%9D-%EC%95%BD%EA%B0%84%EC%9D%98-exploit%EA%B4%80%EC%A0%90?category=669964
 
-```c
-/*
-  ------------------------- malloc_consolidate -------------------------
 
-  malloc_consolidate is a specialized version of free() that tears
-  down chunks held in fastbins.  Free itself cannot be used for this
-  purpose since, among other things, it might place chunks back onto
-  fastbins.  So, instead, we need to use a minor variant of the same
-  code.
-  malloc_consolidate는 fastbins에 저장된 chunks들을 해체하는 특수한 free()이다.
-  free()는 다른 것들 중에서, chunks를 도로 fastbins에 저장할 수 있기 때문에, free() 자체는 이 목적을 위해 사용될 수 없다. 그래서 대신에, 같은 코드를 약간 변형시켜 사용해야한다.
 
-  Also, because this routine needs to be called the first time through
-  malloc anyway, it turns out to be the perfect place to trigger
-  initialization code.
-  또한, 이 루틴은 malloc을 통해 처음 호출되야 하기때문에, 초기화 코드를 실행시키기에 가장 적합한 위치라고 할 수 있다.
-*/
-
-static void malloc_consolidate(mstate av)
-{
-  mfastbinptr*    fb;                 /* current fastbin being consolidated */
-  mfastbinptr*    maxfb;              /* last fastbin (for loop control) */
-  mchunkptr       p;                  /* current chunk being consolidated */
-  mchunkptr       nextp;              /* next chunk to consolidate */
-  mchunkptr       unsorted_bin;       /* bin header */
-  mchunkptr       first_unsorted;     /* chunk to link to */
-
-  /* These have same use as in free() */
-  mchunkptr       nextchunk;
-  INTERNAL_SIZE_T size;
-  INTERNAL_SIZE_T nextsize;
-  INTERNAL_SIZE_T prevsize;
-  int             nextinuse;
-  mchunkptr       bck;
-  mchunkptr       fwd;
-
-  /*
-    If max_fast is 0, we know that av hasn't
-    yet been initialized, in which case do so below
-    global_max_fast (fastbin에서 처리되는 메모리의 최대 크기) 값이 0이라면, av가 초기화되지 않았다는 뜻이므로, 아래의 과정(else문)을 수행한다.
-  */
-  if (get_max_fast () != 0) { // 초기화가 된 경우
-    clear_fastchunks(av); // av의 FASTCHUNKS_BIT를 제거한다.
-
-    unsorted_bin = unsorted_chunks(av); // unsorted bin header chunk를 저장한다.
-
-    /*
-      Remove each chunk from fast bin and consolidate it, placing it
-      then in unsorted bin. Among other reasons for doing this,
-      placing in unsorted bin avoids needing to calculate actual bins
-      until malloc is sure that chunks aren't immediately going to be
-      reused anyway.
-      fastbin에서 각각의 chunk를 제거하고, 병합시킨 다음, unsorted bin에 집어넣는다.
-      이 작업을 하는 다른 이유들 중, unsorted bin에 집어넣는 것은 malloc이 chunks가 즉시 재사용되지 않을 것이라고 확신할 때까지 실제 bin을 계산할 필요가 없다는 것이 있다.
-    */
-
-    maxfb = &fastbin (av, NFASTBINS - 1); // fastbin 최대 bin list 주소
-    fb = &fastbin (av, 0); // fastbin 최소 bin list 주소
-    do { // fb가 maxfb가 될 때까지 반복한다.
-      p = atomic_exchange_acq (fb, NULL); // fb에 lock을 건다. 
-      if (p != 0) { // lock이 제대로 걸린 경우 동작한다.
-	do { // 해당 fastbinlist 내에 free된 chunk가 모두 소모될 때까지 반복한다.
-	  check_inuse_chunk(av, p); // 제대로 chunk로서 기능을 하는지에 대한 검사와, 물리적으로 next chunk에 prev_inuse bit가 제대로 걸려있는지 확인한다. (fastbin에 대해서는 늘 next chunk의 prev_inuse bit가 설정된다.)
-	  nextp = p->fd; // binlist 내의 next chunk를 저장한다.
-
-	  /* Slightly streamlined version of consolidation code in free() 
-      free()의 병합 코드가 약간 간소화된 버전이다.
-    */
-	  size = chunksize (p); // 현재 chunk의 size를 저장한다.
-	  nextchunk = chunk_at_offset(p, size); // 물리적으로 next chunk 저장
-	  nextsize = chunksize(nextchunk); // next chunk의 size를 저장한다.
-
-	  if (!prev_inuse(p)) { // 이전 chunk에대해 prev_inuse bit가 설정되지 않았다면(prev chunk가 free된 상태라면, fastbin인 경우 항상 next chunk(물리적)의 prev_inuse bit가 설정된다.)
-	    prevsize = prev_size (p);
-	    size += prevsize;
-	    p = chunk_at_offset(p, -((long) prevsize)); // p에 prev chunk의 offset을 저장한다.
-	    unlink(av, p, bck, fwd); // p는 항상 이중 연결리스트로 된 binlist이므로 unlink를 이용하여 binlist에서 제거한다.
-	  }
-
-	  if (nextchunk != av->top) { // nextchunk가 top chunk가 아닐 경우
-	    nextinuse = inuse_bit_at_offset(nextchunk, nextsize); // nextchunk에대해 next chunk(물리적)의 prev_inuse bit를 확인하여 nextchunk가 사용 중인지 확인한다.(fastbin이 아닌 free된 chunk인지 확인)
-
-	    if (!nextinuse) { // nextchunk가 fastbin이 아닌 free된 chunk인 경우
-	      size += nextsize;
-	      unlink(av, nextchunk, bck, fwd); // binlist에서 제거한다.
-	    } else // nextchunk가 fastbin이거나 free된 chunk가 아닐 경우
-	      clear_inuse_bit_at_offset(nextchunk, 0); // 현재 fastbin chunk에 대한 prev_inuse bit를 제거한다.
-
-      // ** unsorted bin의 앞 쪽에 새로운 chunk를 추가한다. **
-	    first_unsorted = unsorted_bin->fd;
-	    unsorted_bin->fd = p;
-	    first_unsorted->bk = p;
-
-	    if (!in_smallbin_range (size)) { // 해당 bin이 large bin size인 경우 nextsize를 초기화한다.
-	      p->fd_nextsize = NULL;
-	      p->bk_nextsize = NULL;
-	    }
-
-	    set_head(p, size | PREV_INUSE); // 물리적으로 이전 chunk는 사용 중인 chunk이므로 prev_inuse bit를 설정한다. (p의 prev_inuse bit이 1인 경우였거나, 혹은 p 이전의 prev chunk가 free된 chunk였다면 bins의 속하는 chunk였다면 이미 해당 chunk의 prev chunk와 병합했을 것이기 때문)
-	    p->bk = unsorted_bin;
-	    p->fd = first_unsorted;
-	    set_foot(p, size); // 병합한 p에대해 물리적으로 next chunk의 prev_size에 값을 저장한다.
-	  }
-
-	  else { // next chunk가 top chunk인 경우, top chunk와 병합된다.
-	    size += nextsize;
-	    set_head(p, size | PREV_INUSE); // top chunk의 prev_inuse bit를 설정한다.
-	    av->top = p; // top chunk가 된다.
-	  }
-
-	} while ( (p = nextp) != 0); // 해당 fastbinlist 내에 free된 chunk가 모두 소모될 때까지 반복한다.
-
-      }
-    } while (fb++ != maxfb); // fb가 maxfb가 될 때까지 반복한다.
-  }
-  else { // av 초기화가 되지 않은 경우
-    malloc_init_state(av); // av를 초기화시켜준다.
-    check_malloc_state(av); // 해당 arena에 대해서 chunk들이 정상적으로 관계되어 있는지 확인한다.
-  }
-}
-```
+아 나머지 언제 다 쓰지
 
