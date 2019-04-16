@@ -34,6 +34,11 @@ locking
 
 chunk의 구조라던가하는 기본적인 배경지식은 있다고 가정하고 진행한다. 
 
+
+
+여러 자료들 참고 및 뇌피셜로 내가 열심히 주석을 달아놓은 malloc_glibc-2.25.c는 
+<https://github.com/ch4rli3kop/Study/blob/master/malloc/malloc_glibc-2.25.c>에서 확인할 수 있다.
+
 ### __libc_malloc
 
 malloc을 호출하면 내부적으로 이 __libc_malloc()이 호출된다. 

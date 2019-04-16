@@ -2918,37 +2918,38 @@ __libc_free (void *mem)
 
   void (*hook) (void *, const void *)
     = atomic_forced_read (__free_hook);
-  if (__builtin_expect (hook != NULL, 0))
+  if (__builtin_expect (hook != NULL, 0)) // __free_hook이 등록되어 있으면
     {
-      (*hook)(mem, RETURN_ADDRESS (0));
+      (*hook)(mem, RETURN_ADDRESS (0)); // 해당 hook을 실행한다.
       return;
     }
 
-  if (mem == 0)                              /* free(0) has no effect */
+  if (mem == 0)                              /* free(0) has no effect, free(0)은 동작하지 않음 */
     return;
 
-  p = mem2chunk (mem);
+  p = mem2chunk (mem); // mem는 chunk의 payload를 나타내므로 chunk header의 포인터를 가져온다.
 
-  if (chunk_is_mmapped (p))                       /* release mmapped memory. */
+  if (chunk_is_mmapped (p))                       /* release mmapped memory., mmap으로 할당된 chunk인 경우 */
     {
       /* See if the dynamic brk/mmap threshold needs adjusting.
-	 Dumped fake mmapped chunks do not affect the threshold.  */
+	 Dumped fake mmapped chunks do not affect the threshold.  
+   동적 brk/mmap 임계값을 조정할 필요가 있는지 확인한다. 덤프된 가짜 mmapped chunk는 임계 값에 영향을 끼치지 않는다.*/
       if (!mp_.no_dyn_threshold
           && chunksize_nomask (p) > mp_.mmap_threshold
           && chunksize_nomask (p) <= DEFAULT_MMAP_THRESHOLD_MAX
 	  && !DUMPED_MAIN_ARENA_CHUNK (p))
         {
-          mp_.mmap_threshold = chunksize (p);
+          mp_.mmap_threshold = chunksize (p); // mmap의 임계 값을 p의 size로 설정한다.
           mp_.trim_threshold = 2 * mp_.mmap_threshold;
           LIBC_PROBE (memory_mallopt_free_dyn_thresholds, 2,
                       mp_.mmap_threshold, mp_.trim_threshold);
         }
-      munmap_chunk (p);
+      munmap_chunk (p); // mmap으로 할당된 chunk를 해제한다.
       return;
     }
 
-  ar_ptr = arena_for_chunk (p);
-  _int_free (ar_ptr, p, 0);
+  ar_ptr = arena_for_chunk (p); // 해당 chunk의 arena 포인터를 저장하고 mutex에 lock을 건다.
+  _int_free (ar_ptr, p, 0); // free 동작을 수행한다. 내부에서 arena mutex의 lock을 해제한다.
 }
 libc_hidden_def (__libc_free)
 

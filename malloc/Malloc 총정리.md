@@ -677,11 +677,10 @@ realloc() 함수의 경우, 먼저 현재 chunk에 요청을 처리할 만한 �
 
 1. __free_hook이 설정되어 있다면 해당 hook을 호출하고 종료한다.
 2. 주어진 mem 포인터로부터 chunk의 포인터를 얻는다.
-3. `mem`이 NULL이라면 리턴한다.
-4. 해당 chunk가 mmapped되면, 동적 brk/mmap 임계 값을 조정해야 하는 경우, `munmap_chunk`를 호출하여 메모리를 해제한다. (종료)
+3. `mem`이 NULL이라면 반환한다. (종료)
+4. 해당 chunk가 mmapped되면, 동적 brk/mmap 임계 값을 조정해야 하는 경우 `munmap_chunk`를 호출하여 메모리를 해제한다. (종료)
 5. 그렇지 않은 경우, 해당 chunk의 arena 포인터를 가져오고, lock을 건다.
-6. `_int_free`를 호출한다.
-7. arena lock을 해제한다.
+6. `_int_free`를 호출한다. 내부에서 mutex에 대한 lock을 해제한다.
 
 
 
@@ -700,36 +699,38 @@ realloc() 함수의 경우, 먼저 현재 chunk에 요청을 처리할 만한 �
 4. chunk의 size가 fastbin 범위이면 다음 작업을 수행한다.
    1. next chunk의 size가 minimum과 maximum size(`av->system_mem`) 범위 안에 존재하는지 확인한다. 그렇지 않으면 error("free(): invalid next size (fast)")를 발생시킨다.
 
-   2. 해당 chunk에 대해 `free_perturb`를 호출한다.
+   2. 해당 chunk에 대해 `free_perturb`를 호출하여 초기화 작업을 수행한다.
 
-   3. `av`에 `FASTCHUNKS_BIT`를 설정한다. 해당 arena가 fastbin chunk를 포함한다고 표시
+   3. `av`에 `FASTCHUNKS_BIT`를 설정하여 해당 arena가 fastbin chunk를 포함한다고 표시한다.
 
    4. chunk size에 따라 fastbin array의 index를 가져온다.
 
    5. 해당 fastbin의 top에 존재하는 chunk와 우리가 추가하려는 chunk와 동일한지 확인한다. 동일하다면 중복해서 free를 호출한 경우이므로, error("double free or corruption (fasttop)")을 발생시킨다.
 
-   6. 해당 fastbin의 top에 존재하는 chunk의 size와 우리가 추가하려는 chunk의 size가 동일한지 확인한다. 동일하지 않다면 error("invalid fastbin entry (free)")를 발생시킨다. 
+   6. 해당 fastbin list의 앞 쪽(HEAD)에 해당 chunk를 추가한다.
 
-   7. fastbin list의 top에 해당 chunk를 추가한 뒤(제일 앞에), 리턴한다.
+   7. old chunk(해당 fastbin list에 대해서 기존 HEAD에 위치했던 chunk)의 fastbin에서의 index와 방금 추가한 chunk의 index가 동일한지 확인한다. 동일하지 않다면 error("invalid fastbin entry (free)")를 발생시킨다. 
+
+   8. 종료한다.
 
       
 
-5. 해당 chunk가 mmapped 된 chunk가 아니라면 다음 작업을 수행한다.
+5. 해당 chunk가 mmapped 된 chunk가 아니라면 다음 작업을 수행한다. (fastbinsY가 아닌 bins인 경우)
    1. 해당 chunk가 top chunk인지 아닌지를 확인한다. top chunk라면, error("double free or corruption (top)")을 발생시킨다.
 
    2. next chunk(by memory)가 해당 arena의 범위 안에 존재하는지 확인한다. 그렇지 않다면 error("double free or corruption (out)")을 발생시킨다.
 
-   3. next chunk(by memory)의 pre_inuse bit가 설정되어있는지 아닌지 확인한다. 설정되어 있지 않다면, error("double free or corruption (!prev)")를 발생시킨다.
+   3. next chunk(by memory)의 size에 prev_inuse bit가 설정되어있는지 아닌지 확인한다. 설정되어 있지 않다면, error("double free or corruption (!prev)")를 발생시킨다.
 
    4. next chunk의 size가 miminum과 maximum size (`av->system_mem`) 범위안에 존재하는지 확인한다. 그렇지 않다면, error("free(): invalid next size (normal)")을 발생시킨다.
 
-   5. 해당 chunk에 대해서 `free_perturb`를 호출한다.
+   5. 해당 chunk에 대해서 `free_perturb`를 호출하여 초기화 작업을 수행한다.
 
    6. previous chunk (by memory)가 사용 중이 아니라면, previous chunk에 대해 `unlink`를 호출한다.
 
    7. next chunk (by memory)가 top chunk가 아니라면, 다음 작업을 수행한다.
       1. next chunk (by memory)가 사용 중이 아니라면, next chunk에 대해 `unlink`를 호출한다.
-      2. (free 되었을 경우) previous, next chunk (by memory)와 현재 chunk를 합병한 뒤, unsorted bin의 head에 추가한다. 추가 전, `unsorted_chunks(av)->fd->bk == unsorted_chunks(av)`인지 확인한다. 그렇지 않다면, error("free(): corrupted unsorted chunks")를 발생시킨다.
+      2. (freed chunk 상태인) previous, next chunk (by memory)와 현재 chunk를 합병한 뒤, unsorted bin의 head에 추가한다. 추가 전, `unsorted_chunks(av)->fd->bk == unsorted_chunks(av)`인지 확인한다. 그렇지 않다면, error("free(): corrupted unsorted chunks")를 발생시킨다.
 
    8. next chunks (by memory)가 top chunk라면, 해당 chunk를 하나의 top chunk로 병합시킨다.
 
@@ -739,9 +740,9 @@ realloc() 함수의 경우, 먼저 현재 chunk에 요청을 처리할 만한 �
 
 6. 현재 chunk가 top chunk가 아니라면, unsorted bin에 추가하고 현재 chunk의 size 필드와 next chunk의 prev_size 필드에 현재 chunk의 size를 기록한다.
 
-7. 병합된 현재 chunk의 size가 64K 이상이고 현재 arena가 fast bin을 포함하면 malloc_consolidate를 호출하여 fast bin 병합을 한다.
+7. (병합된거 모두 포함) 현재 chunk의 size가 FASTBIN_CONSOLIDATION_THRESHOLD(65536)이상이고 현재 arena가 fast bin을 포함하면 malloc_consolidate를 호출하여 fast bin 병합을 수행한다.
 
-8. 현재 chunk의 size가 정해진 size(128K)이상이면 systrim() 함수를 호출하여 top chunk의 size를 줄이려고 시도한다. (systrim 함수는 top chunk가 sbrk를 통해 확장된 heap 영역에 속할 경우에만 수행되며 현재 top chunk의 크기에서 chunk 정보를 저장하기 위한 최소 크기와 top chunk가 기본적으로 가져야 할 여유 공간의 크기만큼을 뺀 크기를 페이지 단위로 조정하여 sbrk를 호출한다. 또한 __after_morecore_hook이 정의되어 있다면 해당 hook을 호출한 뒤 top chunk의 크기를 조정한다.)
+8. 현재 chunk의 size가 정해진 trim_threshold(128K)이상이면 systrim() 함수를 호출하여 top chunk의 size를 줄인다. (systrim 함수는 top chunk가 sbrk를 통해 확장된 heap 영역에 속할 경우에만 수행되며 현재 top chunk의 크기에서 chunk 정보를 저장하기 위한 최소 크기와 top chunk가 기본적으로 가져야 할 여유 공간의 크기만큼을 뺀 크기를 페이지 단위로 조정하여 sbrk를 호출한다. 또한 __after_morecore_hook이 정의되어 있다면 해당 hook을 호출한 뒤 top chunk의 크기를 조정한다.)
 
 9. 해당 chunk가 mmapped라면 `munmap_chunk`를 호출한다.
 
